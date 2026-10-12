@@ -1,0 +1,79 @@
+# Sentinel 配置文件
+# ====================
+# 目标内核 >= 5.15；所有时长字段支持 Go duration 格式（"5m"、"30s"、"1h"）
+
+# 审批与管理 HTTP 服务
+approval:
+  listen_addr: "127.0.0.1:7654"
+  timeout: "5m"                # 单条审批的超时时间
+  auto_deny_on_timeout: true   # 超时后自动拒绝
+  token_path: "/run/sentinel/api-token"  # API 令牌文件（0600，CLI 自动读取）
+
+# eBPF 配置（字节码已嵌入二进制，此处无需指定 .o 路径）
+ebpf:
+  pin_path: "/sys/fs/bpf/sentinel"   # BPF map pin 目录
+  cgroup_path: "/sys/fs/cgroup"      # connect 钩子 attach 的 cgroup 根
+  enable_connect4: true
+  enable_connect6: true
+  enable_taint_tracking: true
+
+# 策略引擎
+policy:
+  # 初始允许/拒绝列表（运行时可通过 sentinel-cli 增删，双向同步内核 map）
+  allow:
+    - "93.184.216.34:443"   # example.com
+    - "142.250.80.46:443"   # google.com
+  deny:
+    - "1.2.3.4:80"
+
+  temp_allow_ttl: "5m"      # 审批通过后的临时放行 TTL
+  cleanup_interval: "30s"   # 过期条目清理周期
+
+# 污点追踪
+taint:
+  # 受监控路径前缀：读取这些前缀下的文件会触发污染（写入内核 watch_map）
+  # 最多 8 条（内核 MAX_WATCH_PATHS），单条 <= 63 字节
+  # 匹配规则：前缀 + 路径边界（"/home/u/.ssh" 不会匹配 "/home/u/.sshx"）
+  watch_paths:
+    - "/home/user/Mail"
+    - "/home/user/Calendar"
+    - "/home/user/Contacts"
+    - "/home/user/.ssh"
+    - "/home/user/.gnupg"
+
+  # 保留字段（当前内核态未按扩展名过滤）
+  watch_extensions:
+    - ".db"
+    - ".key"
+    - ".pem"
+    - ".secret"
+
+# cgroup freezer（优先 v2 unified，回退 v1 freezer 控制器）
+freezer:
+  enabled: true
+  cgroup_name: "sentinel_runtime"
+  freeze_on_review: true    # 需要审批时冻结进程
+  thaw_on_approve: true     # 审批通过后解冻
+  thaw_on_deny: false       # 审批拒绝后保持冻结，等待人工处置
+
+# 凭证代理 (hatch-authd)
+authd:
+  enabled: true
+  # 凭证元信息；真实值通过 value_env 指定的环境变量注入，绝不写入本文件
+  credentials:
+    - id: "gmail-oauth"
+      type: "oauth_token"
+      value_env: "SENTINEL_CRED_GMAIL"
+      scope: ["gmail.readonly"]
+    - id: "calendar-api"
+      type: "api_key"
+      value_env: "SENTINEL_CRED_CALENDAR"
+      scope: ["calendar.read", "calendar.write"]
+
+  surrogate_ttl: "1h"       # 代理令牌有效期
+
+# 日志
+logging:
+  level: "info"       # debug | info | warn | error
+  format: "text"      # text | json
+  output: "stderr"    # stderr | stdout | /path/to/file
