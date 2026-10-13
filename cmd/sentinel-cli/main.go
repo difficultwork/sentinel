@@ -36,7 +36,7 @@ const defaultTokenPath = "/run/sentinel/api-token"
 
 func main() {
 	apiURL := flag.String("api", defaultAPI, "Sentinel 守护进程 API 地址")
-	tokenFlag := flag.String("token", "", "API 令牌（默认从令牌文件或环境变量读取）")
+	tokenFlag := flag.String("token", "", "API 令牌(默认从令牌文件或环境变量读取)")
 	flag.Parse()
 
 	args := flag.Args()
@@ -47,7 +47,7 @@ func main() {
 
 	token := resolveToken(*tokenFlag)
 	if token == "" {
-		fmt.Fprintln(os.Stderr, "错误: 未找到 API 令牌（--token、SENTINEL_API_TOKEN 或令牌文件均未提供）")
+		fmt.Fprintln(os.Stderr, "错误: 未找到 API 令牌(--token, SENTINEL_API_TOKEN 或令牌文件均未提供)")
 		os.Exit(1)
 	}
 
@@ -106,7 +106,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Println(`Sentinel CLI — 管理工具
+	fmt.Println(`Sentinel CLI - 管理工具
 
 用法:
   sentinel-cli [flags] <command> [args]
@@ -126,8 +126,8 @@ func printUsage() {
 
 选项:
   -api <url>                Sentinel API 地址 (默认 http://127.0.0.1:7654)
-  -token <token>            API 令牌（也可用环境变量 SENTINEL_API_TOKEN，
-                            或由守护进程写入的令牌文件自动发现）`)
+  -token <token>            API 令牌(也可用环境变量 SENTINEL_API_TOKEN,
+                            或由守护进程写入的令牌文件自动发现)`)
 }
 
 // resolveToken 按优先级解析 API 令牌。
@@ -195,7 +195,7 @@ func (c *httpClient) doAndPrint(req *http.Request) {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusUnauthorized {
-		fmt.Fprintln(os.Stderr, "鉴权失败: 令牌无效或已过期（守护进程重启后需更新）")
+		fmt.Fprintln(os.Stderr, "鉴权失败: 令牌无效或已过期(守护进程重启后需更新)")
 		os.Exit(1)
 	}
 	if resp.StatusCode != http.StatusOK {

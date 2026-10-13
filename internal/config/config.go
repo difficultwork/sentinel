@@ -213,7 +213,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("policy.cleanup_interval 必须为正")
 	}
 	if n := len(c.Taint.WatchPaths); n > MaxWatchPaths {
-		return fmt.Errorf("taint.watch_paths 最多 %d 条（内核 MAX_WATCH_PATHS 限制），当前 %d 条",
+		return fmt.Errorf("taint.watch_paths 最多 %d 条(内核 MAX_WATCH_PATHS 限制), 当前 %d 条",
 			MaxWatchPaths, n)
 	}
 	for i, p := range c.Taint.WatchPaths {
@@ -234,7 +234,7 @@ func (c *Config) Validate() error {
 		for i, e := range kind.list {
 			ip, port, err := parseIPPort(e)
 			if err != nil {
-				return fmt.Errorf("%s[%d] 无效（应为 ip:port）: %w", kind.name, i, err)
+				return fmt.Errorf("%s[%d] 无效(应为 ip:port): %w", kind.name, i, err)
 			}
 			_ = ip
 			_ = port

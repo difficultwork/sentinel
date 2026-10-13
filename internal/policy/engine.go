@@ -119,7 +119,7 @@ func (e *Engine) SubmitApproval(req ApprovalRequest) bool {
 	sink := e.approvalSink
 	e.mu.RUnlock()
 	if sink == nil {
-		e.logger("[policy] 无审批通道，默认拒绝")
+		e.logger("[policy] 无审批通道, 默认拒绝")
 		return false
 	}
 	sink(req)

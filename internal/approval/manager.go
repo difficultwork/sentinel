@@ -109,7 +109,7 @@ func (m *Manager) Submit(req policy.ApprovalRequest) error {
 	select {
 	case m.notify <- req:
 	default:
-		m.logger("[approval] 通知通道满，丢弃通知")
+		m.logger("[approval] 通知通道满, 丢弃通知")
 	}
 	return nil
 }
@@ -174,7 +174,7 @@ func (m *Manager) resolveTimeout(requestID string) {
 		Timestamp: time.Now(),
 		Request:   req,
 	})
-	m.logger(fmt.Sprintf("[approval] 审批超时，自动拒绝: %s", requestID))
+	m.logger(fmt.Sprintf("[approval] 审批超时, 自动拒绝: %s", requestID))
 }
 
 // emit 非阻塞发送结果；通道满时记日志丢弃（守护进程应为常驻消费者）。
@@ -182,7 +182,7 @@ func (m *Manager) emit(r Result) {
 	select {
 	case m.results <- r:
 	default:
-		m.logger("[approval] 结果通道满，结果被丢弃")
+		m.logger("[approval] 结果通道满, 结果被丢弃")
 	}
 }
 

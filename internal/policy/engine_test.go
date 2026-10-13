@@ -110,7 +110,7 @@ func TestDecisionMatrix(t *testing.T) {
 			expected: events.DecisionNeedReview,
 		},
 		{
-			name:  "污点进程+拒绝列表 → 拒绝（拒绝优先于污点）",
+			name:  "污点进程+拒绝列表 → 拒绝(拒绝优先于污点)",
 			setup: func(e *Engine) { _ = e.AddDeny("10.0.0.2", 80) },
 			event: ipEvent("10.0.0.2", 80, 100, events.TaintDirty),
 			expected: events.DecisionDeny,
@@ -122,7 +122,7 @@ func TestDecisionMatrix(t *testing.T) {
 			expected: events.DecisionNeedReview,
 		},
 		{
-			name: "污点进程+临时放行 → 放行（人工审批优先于污点）",
+			name: "污点进程+临时放行 → 放行(人工审批优先于污点)",
 			setup: func(e *Engine) {
 				_ = e.AddTempAllow("10.0.0.1", 443, time.Minute)
 			},
@@ -140,7 +140,7 @@ func TestDecisionMatrix(t *testing.T) {
 		},
 		// ---- v6：与 v4 完全同一矩阵 ----
 		{
-			name:  "v6 污点进程+临时放行 → 放行（v6 审批闭环）",
+			name:  "v6 污点进程+临时放行 → 放行(v6 审批闭环)",
 			setup: func(e *Engine) { _ = e.AddTempAllow("2001:db8::1", 443, time.Minute) },
 			event:    ip6Event("2001:db8::1", 443, 100, events.TaintDirty),
 			expected: events.DecisionAllow,
@@ -152,7 +152,7 @@ func TestDecisionMatrix(t *testing.T) {
 			expected: events.DecisionDeny,
 		},
 		{
-			name:     "v6 干净进程+未知目标 → 需要审批（deny-by-default）",
+			name:     "v6 干净进程+未知目标 → 需要审批(deny-by-default)",
 			setup:    func(e *Engine) {},
 			event:    ip6Event("2001:db8::9999", 443, 100, events.TaintClean),
 			expected: events.DecisionNeedReview,
@@ -183,12 +183,12 @@ func TestTempAllowExpiry(t *testing.T) {
 
 	evt := ipEvent("10.0.0.1", 443, 100, events.TaintClean)
 	if got := e.Evaluate(&evt); got != events.DecisionAllow {
-		t.Fatalf("TTL 内应放行，得到 %d", got)
+		t.Fatalf("TTL 内应放行, 得到 %d", got)
 	}
 
 	time.Sleep(30 * time.Millisecond)
 	if got := e.Evaluate(&evt); got != events.DecisionNeedReview {
-		t.Fatalf("TTL 过期后应需要审批，得到 %d", got)
+		t.Fatalf("TTL 过期后应需要审批, 得到 %d", got)
 	}
 }
 
@@ -227,7 +227,7 @@ func TestCleanExpiredTempSync(t *testing.T) {
 	e.CleanExpiredTemp()
 
 	if len(sync.tempCalls) != 2 {
-		t.Fatalf("期望 2 次同步（写入+删除），得到 %d: %+v", len(sync.tempCalls), sync.tempCalls)
+		t.Fatalf("期望 2 次同步(写入+删除), 得到 %d: %+v", len(sync.tempCalls), sync.tempCalls)
 	}
 	if sync.tempCalls[1].on {
 		t.Errorf("过期清理应删除内核条目: %+v", sync.tempCalls[1])
@@ -245,14 +245,14 @@ func TestTaintCacheFallback(t *testing.T) {
 	evt := ipEvent("10.0.0.1", 443, 200, events.TaintClean)
 	e.UpdateTaintCache(200, events.TaintDirty)
 	if got := e.Evaluate(&evt); got != events.DecisionNeedReview {
-		t.Errorf("缓存污点应触发审批，得到 %d", got)
+		t.Errorf("缓存污点应触发审批, 得到 %d", got)
 	}
 
 	// 事件自带 CLEAN、缓存也是 CLEAN → 放行
 	e2 := newTestEngine(nil)
 	_ = e2.AddAllow("10.0.0.1", 443)
 	if got := e2.Evaluate(&evt); got != events.DecisionAllow {
-		t.Errorf("干净进程 + 允许列表应放行，得到 %d", got)
+		t.Errorf("干净进程 + 允许列表应放行, 得到 %d", got)
 	}
 }
 

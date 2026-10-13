@@ -99,6 +99,19 @@ loader 包目录，与 go:embed 就地衔接，无拷贝步骤：
 bpf/sentinel.bpf.c --clang 18--> internal/loader/sentinel.bpf.o --go:embed--> bin/sentinel（单文件部署）
 ```
 
+### 跨平台开发（Windows/macOS）
+
+eBPF 仅存在于 Linux，但代码按平台拆分（`loader_linux.go` /
+`loader_other.go`，构建标签隔离），非 Linux 平台上：
+
+- `go build ./...`、`go vet ./...`、`go test ./...` 正常通过
+- `sentinel --dry-run` 完整可用（策略引擎/审批通道/凭证代理均为纯用户态）
+- 完整模式下 eBPF 相关调用返回受限错误（`loader.ErrUnsupportedPlatform`），
+  守护进程降级运行并提示改用 `--dry-run`
+
+Windows 首次编译前放置一个空的 embed 占位文件即可：
+`New-Item -ItemType File internal\loader\sentinel.bpf.o`
+
 ### 运行
 
 ```bash
@@ -159,8 +172,10 @@ sentinel/
 │   ├── freezer/freezer.go      # cgroup v2/v1 freezer
 │   ├── authd/proxy.go          # hatch-authd 凭证代理
 │   └── loader/                 # eBPF 加载器（go:embed 嵌入字节码）
-│       ├── loader.go
-│       ├── README.md           # embed 构建流水线说明
+│       ├── loader.go           # 共享：embed、Config、平台错误哨兵
+│       ├── loader_linux.go     # Linux 完整实现（cilium/ebpf）
+│       ├── loader_other.go     # 非 Linux 桩（编译通过 + 运行时受限报错）
+│       ├── README.md           # embed 构建流水线 + 跨平台说明
 │       └── sentinel.bpf.o      # 编译产物（clang 直接输出到本目录，make bpf 生成）
 ├── configs/sentinel.yaml       # 配置文件
 ├── scripts/demo.sh             # 演示脚本

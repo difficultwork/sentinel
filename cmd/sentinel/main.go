@@ -14,6 +14,7 @@ package main
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -38,16 +39,16 @@ import (
 
 func main() {
 	configPath := flag.String("config", "configs/sentinel.yaml", "配置文件路径")
-	dryRun := flag.Bool("dry-run", false, "模拟模式：不加载 eBPF 程序，仅测试策略引擎与审批通道")
+	dryRun := flag.Bool("dry-run", false, "模拟模式: 不加载 eBPF 程序, 仅测试策略引擎与审批通道")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("========================================")
-	log.Println("  Sentinel — 内核级 AI Agent 安全网关")
+	log.Println("  Sentinel - 内核级 AI Agent 安全网关")
 	log.Println("========================================")
-	mode := "完整模式（eBPF）"
+	mode := "完整模式(eBPF)"
 	if *dryRun {
-		mode = "模拟模式（dry-run）"
+		mode = "模拟模式(dry-run)"
 	}
 	log.Printf("模式: %s | 配置: %s", mode, *configPath)
 
@@ -78,7 +79,7 @@ func main() {
 		for _, c := range cfg.Authd.Credentials {
 			value := os.Getenv(c.ValueEnv)
 			if value == "" {
-				log.Printf("[authd] 警告: 环境变量 %s 未设置，凭证 %s 未加载", c.ValueEnv, c.ID)
+				log.Printf("[authd] 警告: 环境变量 %s 未设置, 凭证 %s 未加载", c.ValueEnv, c.ID)
 				continue
 			}
 			authProxy.AddCredential(c.ID, c.Type, value, c.Scope)
@@ -100,7 +101,7 @@ func main() {
 	if cfg.Freezer.Enabled && !*dryRun {
 		fz, err = freezer.New(cfg.Freezer.CgroupName, logger)
 		if err != nil {
-			log.Printf("警告: cgroup freezer 初始化失败（审批暂停功能不可用）: %v", err)
+			log.Printf("警告: cgroup freezer 初始化失败(审批暂停功能不可用): %v", err)
 			fz = nil
 		} else {
 			freezerBackend = "cgroup " + fz.Backend()
@@ -113,7 +114,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("生成 API 令牌失败: %v", err)
 	}
-	log.Printf("API 令牌已写入: %s（CLI 将自动读取）", tokenPath)
+	log.Printf("API 令牌已写入: %s(CLI 将自动读取)", tokenPath)
 
 	// 7. 管理与审批 HTTP 服务
 	apiSrv := api.New(api.Deps{
@@ -160,7 +161,10 @@ func main() {
 	// 10. 加载 eBPF 并灌入初始策略
 	if err := ldr.Load(); err != nil {
 		log.Printf("警告: eBPF 加载失败: %v", err)
-		log.Println("降级运行（仅策略引擎 + 审批通道 + 凭证代理，内核拦截不可用）")
+		if errors.Is(err, loader.ErrUnsupportedPlatform) {
+			log.Println("提示: eBPF 需要 Linux(内核 >= 5.15); 当前平台请使用 --dry-run 模式运行模拟模式")
+		}
+		log.Println("降级运行(仅策略引擎 + 审批通道 + 凭证代理, 内核拦截不可用)")
 	} else {
 		log.Printf("eBPF 状态: %s", ldr.Stats())
 
@@ -233,7 +237,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh
-	log.Printf("收到信号 %v，正在退出...", sig)
+	log.Printf("收到信号 %v, 正在退出...", sig)
 
 	ldr.Close() // 触发 ReadEvents 返回
 	apiSrv.Stop()
@@ -262,7 +266,7 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 		log.Printf("  决策: 拒绝 ✗")
 		return
 	case events.DecisionNeedReview:
-		log.Printf("  决策: 需要人工审批 ⟳（冻结进程，等待用户操作）")
+		log.Printf("  决策: 需要人工审批 ⟳(冻结进程, 等待用户操作)")
 	}
 
 	// 冻结发起连接的进程（尽力而为）
@@ -281,7 +285,7 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 		DstIP:     key.IP().String(),
 		DstPort:   ce.DstPort,
 		Taint:     ce.Taint,
-		Description: fmt.Sprintf("进程 %s (PID=%d) 请求连接到 %s（污点=%d）",
+		Description: fmt.Sprintf("进程 %s (PID=%d) 请求连接到 %s(污点=%d)",
 			ce.CommString(), ce.Pid, target, ce.Taint),
 		Timestamp: time.Now(),
 	}
@@ -317,14 +321,14 @@ func handleApprovalResult(res approval.Result, eng *policy.Engine,
 		return
 	}
 
-	log.Printf("[approval] %s %s（PID=%d）", outcome, req.RequestID, req.Pid)
+	log.Printf("[approval] %s %s(PID=%d)", outcome, req.RequestID, req.Pid)
 	if fz != nil {
 		if cfg.Freezer.ThawOnDeny {
 			if err := fz.Thaw(); err != nil {
 				log.Printf("解冻 cgroup 失败: %v", err)
 			}
 		} else {
-			log.Printf("进程 PID=%d 保持冻结（freezer.thaw_on_deny=false），请人工处置", req.Pid)
+			log.Printf("进程 PID=%d 保持冻结(freezer.thaw_on_deny=false), 请人工处置", req.Pid)
 		}
 	}
 }
@@ -369,7 +373,7 @@ func runDryRun(cfg config.Config, eng *policy.Engine, mgr *approval.Manager, aut
 		case events.DecisionDeny:
 			log.Printf("  决策: 拒绝阻断 ✗")
 		case events.DecisionNeedReview:
-			log.Printf("  决策: 需要人工审批 ⟳（sentinel-cli pending 查看）")
+			log.Printf("  决策: 需要人工审批 ⟳(sentinel-cli pending 查看)")
 		}
 	}
 
@@ -388,7 +392,7 @@ func runDryRun(cfg config.Config, eng *policy.Engine, mgr *approval.Manager, aut
 		log.Printf("提交演示审批失败: %v", err)
 	}
 
-	log.Println("=== 模拟事件结束（守护进程保持运行，等待审批操作）===")
+	log.Println("=== 模拟事件结束(守护进程保持运行, 等待审批操作) ===")
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
@@ -421,7 +425,7 @@ func issueAPIToken(path string) (token, actualPath string, err error) {
 func splitIPPort(s string) (string, uint16, error) {
 	host, portStr, err := net.SplitHostPort(s)
 	if err != nil {
-		return "", 0, fmt.Errorf("应为 ip:port（v6 需方括号）格式: %q", s)
+		return "", 0, fmt.Errorf("应为 ip:port(v6 需方括号)格式: %q", s)
 	}
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil || port == 0 {

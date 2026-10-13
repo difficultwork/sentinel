@@ -21,8 +21,8 @@ import (
 
 func main() {
 	target := flag.String("target", "93.184.216.34:443", "目标地址 ip:port")
-	taint := flag.Bool("taint", false, "模拟污点：先读取一个假敏感文件")
-	sleepMs := flag.Int("sleep", 500, "每次操作间隔（毫秒）")
+	taint := flag.Bool("taint", false, "模拟污点: 先读取一个假敏感文件")
+	sleepMs := flag.Int("sleep", 500, "每次操作间隔(毫秒)")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -45,7 +45,7 @@ func main() {
 		}
 		os.Remove(tmpFile)
 		time.Sleep(time.Duration(*sleepMs) * time.Millisecond)
-		log.Println("→ 此时进程应被 Sentinel 标记为已污染（TAINT_DIRTY）")
+		log.Println("→ 此时进程应被 Sentinel 标记为已污染(TAINT_DIRTY)")
 		log.Println()
 	}
 
@@ -55,11 +55,11 @@ func main() {
 	if err != nil {
 		log.Printf("连接失败: %v", err)
 		if isConnectionRefused(err) {
-			log.Println("→ 连接被拒绝（可能被 Sentinel 阻断或目标不可达）")
+			log.Println("→ 连接被拒绝(可能被 Sentinel 阻断或目标不可达)")
 		}
 	} else {
 		defer conn.Close()
-		log.Printf("连接成功！本地地址: %s", conn.LocalAddr().String())
+		log.Printf("连接成功! 本地地址: %s", conn.LocalAddr().String())
 
 		// 发送一些数据
 		fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: sentinel-demo\r\n\r\n")

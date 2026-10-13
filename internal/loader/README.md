@@ -29,7 +29,33 @@ bpf/sentinel.bpf.c --clang 18--> internal/loader/sentinel.bpf.o --go:embed--> bi
 字节码总是来自当前 C 源码、且由正确的 clang 版本（>= 18，目标内核
 5.15+）编译。
 
+## 跨平台（Windows/macOS）开发
+
+eBPF 是 Linux 内核特性，本包按平台拆分实现：
+
+| 文件 | 构建约束 | 内容 |
+|---|---|---|
+| `loader.go` | 无 | 共享：embed、Config、ErrUnsupportedPlatform |
+| `loader_linux.go` | `//go:build linux` | 完整实现（引用 cilium/ebpf） |
+| `loader_other.go` | `//go:build !linux` | 同构桩，调用返回受限错误 |
+
+非 Linux 平台上：
+
+- `go build ./...` / `go vet ./...` / `go test ./...` 全部通过
+  （单元测试均为纯用户态逻辑）
+- `sentinel --dry-run` 完整可用（策略引擎/审批通道/凭证代理）
+- 完整模式：`Load()` 等返回 `ErrUnsupportedPlatform`，守护进程
+  降级运行并提示改用 `--dry-run`
+
+Windows 开发前需满足 embed：放置一个空的同名文件即可（字节码只在
+Linux 加载路径中被读取）：
+
+```powershell
+New-Item -ItemType File internal\loader\sentinel.bpf.o
+```
+
 ## 部署
 
 得益于 embed，生产部署只需拷贝 `bin/sentinel` 单个文件（目标机器
 无需 clang、无需 .o 文件，仅需 root 权限与内核 >= 5.15）。
+

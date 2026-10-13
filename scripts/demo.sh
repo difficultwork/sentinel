@@ -14,7 +14,7 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_DIR"
 
 echo "========================================"
-echo "  Sentinel 安全网关 — 演示脚本"
+echo "  Sentinel 安全网关 - 演示脚本"
 echo "========================================"
 echo ""
 
@@ -41,11 +41,11 @@ check_bin demo-agent
 DRY_RUN="${1:-}"
 
 if [ "$DRY_RUN" == "--dry-run" ]; then
-    echo -e "${BLUE}>>> 模拟模式（不加载 eBPF）${NC}"
+    echo -e "${BLUE}>>> 模拟模式(不加载 eBPF)${NC}"
     echo ""
     
     # 启动 sentinel 守护进程（模拟模式）
-    echo -e "${YELLOW}>>> 启动 Sentinel 守护进程（模拟模式）...${NC}"
+    echo -e "${YELLOW}>>> 启动 Sentinel 守护进程(模拟模式)...${NC}"
     ./bin/sentinel --dry-run &
     SENTINEL_PID=$!
     

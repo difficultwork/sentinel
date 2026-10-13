@@ -143,10 +143,10 @@ func TestDefaultsOnMissingFields(t *testing.T) {
 		t.Fatalf("Load 失败: %v", err)
 	}
 	if cfg.Policy.TempAllowTTL != 5*time.Minute {
-		t.Errorf("缺失 temp_allow_ttl 应回退默认 5m，得到 %v", cfg.Policy.TempAllowTTL)
+		t.Errorf("缺失 temp_allow_ttl 应回退默认 5m, 得到 %v", cfg.Policy.TempAllowTTL)
 	}
 	if len(cfg.Taint.WatchPaths) != 5 {
-		t.Errorf("缺失 watch_paths 应回退默认 5 条，得到 %d", len(cfg.Taint.WatchPaths))
+		t.Errorf("缺失 watch_paths 应回退默认 5 条, 得到 %d", len(cfg.Taint.WatchPaths))
 	}
 }
 
@@ -172,7 +172,7 @@ func TestValidateErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, err := Load(path); err == nil {
-				t.Errorf("期望校验失败，但通过了")
+				t.Errorf("期望校验失败, 但通过了")
 			}
 		})
 	}

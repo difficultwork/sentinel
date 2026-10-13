@@ -58,7 +58,7 @@ func New(cgroupName string, logger func(string)) (*Freezer, error) {
 
 	root := findFreezerV1Mount()
 	if root == "" {
-		return nil, fmt.Errorf("未找到可用的 cgroup freezer（v2 unified 或 v1 freezer 控制器）")
+		return nil, fmt.Errorf("未找到可用的 cgroup freezer(v2 unified 或 v1 freezer 控制器)")
 	}
 	cgroupPath := filepath.Join(root, cgroupName)
 	if err := os.MkdirAll(cgroupPath, 0755); err != nil {

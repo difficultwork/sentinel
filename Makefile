@@ -78,7 +78,7 @@ toolchain:
 	@echo "$(C_BLUE)→ 检查工具链...$(C_RESET)"
 	@$(CLANG_BIN) --version | head -1
 	@$(GO_BIN) version
-	@echo "$(C_GREEN)✓ 工具链检查完成（请确认 clang >= 18、Go >= 1.25）$(C_RESET)"
+	@echo "$(C_GREEN)✓ 工具链检查完成(请确认 clang >= 18, Go >= 1.25)$(C_RESET)"
 
 # ====================
 # 编译目标
@@ -89,7 +89,7 @@ toolchain:
 bpf: $(BPF_OBJ)
 
 $(BPF_OBJ): $(BPF_SRC)
-	@echo "$(C_BLUE)→ 编译 eBPF 字节码（clang >= 18，目标内核 5.15+）...$(C_RESET)"
+	@echo "$(C_BLUE)→ 编译 eBPF 字节码(clang >= 18, 目标内核 5.15+)...$(C_RESET)"
 	@mkdir -p $(dir $@)
 	$(CLANG_BIN) $(BPF_CFLAGS) -c $< -o $@
 	@echo "$(C_GREEN)✓ eBPF 字节码已生成: $@$(C_RESET)"
@@ -99,7 +99,7 @@ $(BPF_OBJ): $(BPF_SRC)
 go: $(BINS)
 
 $(BIN_DIR)/sentinel: $(BPF_OBJ) $(wildcard cmd/sentinel/*.go) $(wildcard internal/*/*.go)
-	@echo "$(C_BLUE)→ 编译 sentinel 守护进程（字节码已嵌入）...$(C_RESET)"
+	@echo "$(C_BLUE)→ 编译 sentinel 守护进程(字节码已嵌入)...$(C_RESET)"
 	@mkdir -p $(BIN_DIR)
 	$(GO_BIN) build -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/sentinel
 	@echo "$(C_GREEN)✓ $@$(C_RESET)"
@@ -119,7 +119,7 @@ $(BIN_DIR)/demo-agent: $(wildcard cmd/demo-agent/*.go)
 ## 编译全部（eBPF 字节码 + 嵌入 + Go 二进制）
 .PHONY: build
 build: bpf go
-	@echo "$(C_GREEN)✓ 全部编译完成（字节码已嵌入 Go 二进制）$(C_RESET)"
+	@echo "$(C_GREEN)✓ 全部编译完成(字节码已嵌入 Go 二进制)$(C_RESET)"
 
 # ====================
 # 测试目标
@@ -218,14 +218,14 @@ help:
 	@echo ""
 	@echo "$(C_YELLOW)运行:$(C_RESET)"
 	@echo "  make toolchain       检查工具链版本"
-	@echo "  make dry-run         模拟模式（无需 root）"
-	@echo "  make run             完整模式（需 root + 内核 5.15+）"
-	@echo "  make demo            演示 Agent（允许列表内）"
+	@echo "  make dry-run         模拟模式(无需 root)"
+	@echo "  make run             完整模式(需 root + 内核 5.15+)"
+	@echo "  make demo            演示 Agent(允许列表内)"
 	@echo "  make demo-tainted    演示污染 Agent"
 	@echo ""
 	@echo "$(C_RED)清理:$(C_RESET)"
-	@echo "  make clean           清理编译产物（含历史路径遗留）"
-	@echo "  make clean-bpf       清理 BPF pin（需 root）"
+	@echo "  make clean           清理编译产物(含历史路径遗留)"
+	@echo "  make clean-bpf       清理 BPF pin(需 root)"
 	@echo ""
 	@echo "$(C_BLUE)工具链:$(C_RESET)"
 	@echo "  Go:      $(GO_BIN)"

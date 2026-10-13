@@ -44,7 +44,7 @@ func parseYAML(data []byte) (map[string]any, error) {
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("顶层必须是映射（key: value）")
+		return nil, fmt.Errorf("顶层必须是映射(key: value)")
 	}
 	return m, nil
 }
@@ -109,7 +109,7 @@ func parseMap(lines []yamlLine, i, indent int) (any, int, error) {
 	for i < len(lines) && lines[i].indent == indent && !isListItem(lines[i].text) {
 		key, val, ok := splitKV(lines[i].text)
 		if !ok {
-			return nil, i, fmt.Errorf("第 %d 行: 期望 \"key: value\"，得到 %q", lines[i].num, lines[i].text)
+			return nil, i, fmt.Errorf("第 %d 行: 期望 \"key: value\", 得到 %q", lines[i].num, lines[i].text)
 		}
 		if val != "" {
 			m[key] = parseValue(val)
@@ -343,7 +343,7 @@ func getAnyList(m map[string]any, key string) []any {
 func parseIPPort(s string) (string, uint16, error) {
 	host, portStr, err := net.SplitHostPort(s)
 	if err != nil {
-		return "", 0, fmt.Errorf("缺少 :port（v6 地址需加方括号）: %q", s)
+		return "", 0, fmt.Errorf("缺少 :port(v6 地址需加方括号): %q", s)
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
@@ -351,7 +351,7 @@ func parseIPPort(s string) (string, uint16, error) {
 	}
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil || port == 0 {
-		return "", 0, fmt.Errorf("端口无效（1-65535）: %q", portStr)
+		return "", 0, fmt.Errorf("端口无效(1-65535): %q", portStr)
 	}
 	return host, uint16(port), nil
 }

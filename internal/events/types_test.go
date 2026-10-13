@@ -68,7 +68,7 @@ func TestDecodeConnectEventTruncated(t *testing.T) {
 	full := buildConnectEvent()
 	_, err := DecodeConnectEvent(full[:len(full)-1])
 	if !errors.Is(err, ErrTruncated) {
-		t.Errorf("期望 ErrTruncated，得到 %v", err)
+		t.Errorf("期望 ErrTruncated, 得到 %v", err)
 	}
 }
 
@@ -109,7 +109,7 @@ func TestDecodeTaintEventTruncated(t *testing.T) {
 	full := buildTaintEvent()
 	_, err := DecodeTaintEvent(full[:len(full)-1])
 	if !errors.Is(err, ErrTruncated) {
-		t.Errorf("期望 ErrTruncated，得到 %v", err)
+		t.Errorf("期望 ErrTruncated, 得到 %v", err)
 	}
 }
 
