@@ -27,7 +27,11 @@ BPF_OBJ_LEGACY := bpf/sentinel.bpf.o
 PIN_BASE := /sys/fs/bpf/sentinel
 
 # Go 编译参数
-GOFLAGS    := -trimpath -mod=mod
+# export 使所有 go 子命令（build/test/vet/mod）统一生效：
+# -mod=mod 允许在依赖缺失时自动补全 go.mod/go.sum
+# （升级 cilium/ebpf 后首次构建会在有网环境自动拉取并记录哈希；
+#   离线环境请先在有网机器执行 make deps 后再拷贝仓库）
+export GOFLAGS := -trimpath -mod=mod
 GO_LDFLAGS := -s -w
 
 # clang 18 + 内核 5.15+ 编译参数：
@@ -97,19 +101,19 @@ go: $(BINS)
 $(BIN_DIR)/sentinel: $(BPF_OBJ) $(wildcard cmd/sentinel/*.go) $(wildcard internal/*/*.go)
 	@echo "$(C_BLUE)→ 编译 sentinel 守护进程（字节码已嵌入）...$(C_RESET)"
 	@mkdir -p $(BIN_DIR)
-	$(GO_BIN) build $(GOFLAGS) -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/sentinel
+	$(GO_BIN) build -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/sentinel
 	@echo "$(C_GREEN)✓ $@$(C_RESET)"
 
 $(BIN_DIR)/sentinel-cli: $(wildcard cmd/sentinel-cli/*.go) $(wildcard internal/*/*.go)
 	@echo "$(C_BLUE)→ 编译 sentinel-cli...$(C_RESET)"
 	@mkdir -p $(BIN_DIR)
-	$(GO_BIN) build $(GOFLAGS) -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/sentinel-cli
+	$(GO_BIN) build -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/sentinel-cli
 	@echo "$(C_GREEN)✓ $@$(C_RESET)"
 
 $(BIN_DIR)/demo-agent: $(wildcard cmd/demo-agent/*.go)
 	@echo "$(C_BLUE)→ 编译 demo-agent...$(C_RESET)"
 	@mkdir -p $(BIN_DIR)
-	$(GO_BIN) build $(GOFLAGS) -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/demo-agent
+	$(GO_BIN) build -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/demo-agent
 	@echo "$(C_GREEN)✓ $@$(C_RESET)"
 
 ## 编译全部（eBPF 字节码 + 嵌入 + Go 二进制）

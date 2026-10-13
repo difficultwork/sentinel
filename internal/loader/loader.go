@@ -246,40 +246,39 @@ func (l *Loader) mapFor(name string) (*ebpf.Map, error) {
 }
 
 // SetAllow 实现 policy.MapSync：更新内核允许列表 map。
-func (l *Loader) SetAllow(ip4 uint32, port uint16, on bool) error {
+func (l *Loader) SetAllow(key events.NetKey, on bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	m, err := l.mapFor("allow_map")
 	if err != nil {
 		return err
 	}
-	return l.updateAllowMap(m, ip4, port, on)
+	return l.updateAllowMap(m, key, on)
 }
 
 // SetDeny 实现 policy.MapSync：更新内核拒绝列表 map。
-func (l *Loader) SetDeny(ip4 uint32, port uint16, on bool) error {
+func (l *Loader) SetDeny(key events.NetKey, on bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	m, err := l.mapFor("deny_map")
 	if err != nil {
 		return err
 	}
-	return l.updateAllowMap(m, ip4, port, on)
+	return l.updateAllowMap(m, key, on)
 }
 
 // SetTempAllow 实现 policy.MapSync：更新内核临时放行 map。
-func (l *Loader) SetTempAllow(ip4 uint32, port uint16, on bool) error {
+func (l *Loader) SetTempAllow(key events.NetKey, on bool) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	m, err := l.mapFor("temp_allow_map")
 	if err != nil {
 		return err
 	}
-	return l.updateAllowMap(m, ip4, port, on)
+	return l.updateAllowMap(m, key, on)
 }
 
-func (l *Loader) updateAllowMap(m *ebpf.Map, ip4 uint32, port uint16, on bool) error {
-	key := events.AllowKey{IP4: ip4, Port: port}
+func (l *Loader) updateAllowMap(m *ebpf.Map, key events.NetKey, on bool) error {
 	if on {
 		return m.Update(key, uint32(1), ebpf.UpdateAny)
 	}

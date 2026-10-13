@@ -338,15 +338,16 @@ func getAnyList(m map[string]any, key string) []any {
 	return nil
 }
 
-// parseIPPort 解析 "1.2.3.4:443" 形式的条目。
+// parseIPPort 解析 "1.2.3.4:443" 或 "[2001:db8::1]:443"（v6 需方括号）
+// 形式的条目。
 func parseIPPort(s string) (string, uint16, error) {
 	host, portStr, err := net.SplitHostPort(s)
 	if err != nil {
-		return "", 0, fmt.Errorf("缺少 :port: %q", s)
+		return "", 0, fmt.Errorf("缺少 :port（v6 地址需加方括号）: %q", s)
 	}
 	ip := net.ParseIP(host)
-	if ip == nil || ip.To4() == nil {
-		return "", 0, fmt.Errorf("不是有效 IPv4: %q", host)
+	if ip == nil {
+		return "", 0, fmt.Errorf("不是有效 IP 地址: %q", host)
 	}
 	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil || port == 0 {

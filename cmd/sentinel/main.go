@@ -17,6 +17,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -247,9 +248,10 @@ func main() {
 func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 	fz *freezer.Freezer, cfg config.Config) {
 
-	ip := formatIP4(ce.DstIP4)
-	log.Printf("[connect] PID=%d (%s) → %s:%d taint=%d 内核决策=%d",
-		ce.Pid, ce.CommString(), ip, ce.DstPort, ce.Taint, ce.Decision)
+	key := ce.NetKey()
+	target := key.IPPort()
+	log.Printf("[connect] PID=%d (%s) → %s taint=%d 内核决策=%d",
+		ce.Pid, ce.CommString(), target, ce.Taint, ce.Decision)
 
 	decision := eng.Evaluate(ce)
 	switch decision {
@@ -276,11 +278,11 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 		RequestID: policy.NewRequestID(ce.Pid, time.Now()),
 		Pid:       ce.Pid,
 		Comm:      ce.CommString(),
-		DstIP:     ip,
+		DstIP:     key.IP().String(),
 		DstPort:   ce.DstPort,
 		Taint:     ce.Taint,
-		Description: fmt.Sprintf("进程 %s (PID=%d) 请求连接到 %s:%d（污点=%d）",
-			ce.CommString(), ce.Pid, ip, ce.DstPort, ce.Taint),
+		Description: fmt.Sprintf("进程 %s (PID=%d) 请求连接到 %s（污点=%d）",
+			ce.CommString(), ce.Pid, target, ce.Taint),
 		Timestamp: time.Now(),
 	}
 	if !eng.SubmitApproval(req) {
@@ -349,18 +351,18 @@ func runDryRun(cfg config.Config, eng *policy.Engine, mgr *approval.Manager, aut
 		}
 	}
 
-	// 模拟决策矩阵代表性组合
+	// 模拟决策矩阵代表性组合（v4 与 v6 同一矩阵）
 	ipAllowed := firstAllowed(cfg)
 	tests := []events.ConnectEvent{
-		{Pid: 1000, Comm: toComm("agent"), DstIP4: ipToU32(ipAllowed), DstPort: firstPort(cfg, ipAllowed), Taint: events.TaintClean},
-		{Pid: 1000, Comm: toComm("agent"), DstIP4: ipToU32(firstDenied(cfg)), DstPort: denyPort(cfg), Taint: events.TaintClean},
-		{Pid: 2000, Comm: toComm("tainted"), DstIP4: ipToU32(ipAllowed), DstPort: firstPort(cfg, ipAllowed), Taint: events.TaintDirty},
-		{Pid: 3000, Comm: toComm("unknown"), DstIP4: ipToU32("203.0.113.9"), DstPort: 443, Taint: events.TaintClean},
+		{Pid: 1000, Comm: toComm("agent"), Family: events.FamilyInet, DstIP4: ipToU32(ipAllowed), DstPort: firstPort(cfg, ipAllowed), Taint: events.TaintClean},
+		{Pid: 1000, Comm: toComm("agent"), Family: events.FamilyInet, DstIP4: ipToU32(firstDenied(cfg)), DstPort: denyPort(cfg), Taint: events.TaintClean},
+		{Pid: 2000, Comm: toComm("tainted"), Family: events.FamilyInet, DstIP4: ipToU32(ipAllowed), DstPort: firstPort(cfg, ipAllowed), Taint: events.TaintDirty},
+		{Pid: 3000, Comm: toComm("unknown"), Family: events.FamilyInet, DstIP4: ipToU32("203.0.113.9"), DstPort: 443, Taint: events.TaintClean},
+		{Pid: 4000, Comm: toComm("v6agent"), Family: events.FamilyInet6, DstIP6: toIP6("2001:db8::1"), DstPort: 443, Taint: events.TaintClean},
 	}
 
 	for _, evt := range tests {
-		ip := formatIP4(evt.DstIP4)
-		log.Printf("--- 模拟事件: PID=%d → %s:%d (taint=%d) ---", evt.Pid, ip, evt.DstPort, evt.Taint)
+		log.Printf("--- 模拟事件: PID=%d → %s (taint=%d) ---", evt.Pid, evt.TargetString(), evt.Taint)
 		switch eng.Evaluate(&evt) {
 		case events.DecisionAllow:
 			log.Printf("  决策: 自动放行 ✓")
@@ -415,16 +417,17 @@ func issueAPIToken(path string) (token, actualPath string, err error) {
 	return token, fallback, nil
 }
 
+// splitIPPort 解析 "ip:port" / "[v6]:port" 配置条目。
 func splitIPPort(s string) (string, uint16, error) {
-	parts := strings.Split(s, ":")
-	if len(parts) != 2 {
-		return "", 0, fmt.Errorf("应为 ip:port 格式: %q", s)
+	host, portStr, err := net.SplitHostPort(s)
+	if err != nil {
+		return "", 0, fmt.Errorf("应为 ip:port（v6 需方括号）格式: %q", s)
 	}
-	port, err := strconv.ParseUint(parts[1], 10, 16)
+	port, err := strconv.ParseUint(portStr, 10, 16)
 	if err != nil || port == 0 {
-		return "", 0, fmt.Errorf("端口无效: %q", parts[1])
+		return "", 0, fmt.Errorf("端口无效: %q", portStr)
 	}
-	return parts[0], uint16(port), nil
+	return host, uint16(port), nil
 }
 
 func ipToU32(ip string) uint32 {
@@ -440,9 +443,10 @@ func ipToU32(ip string) uint32 {
 	return v
 }
 
-func formatIP4(ip4 uint32) string {
-	return fmt.Sprintf("%d.%d.%d.%d",
-		ip4&0xff, (ip4>>8)&0xff, (ip4>>16)&0xff, (ip4>>24)&0xff)
+func toIP6(s string) [16]byte {
+	var b [16]byte
+	copy(b[:], net.ParseIP(s).To16())
+	return b
 }
 
 func toComm(s string) [16]byte {

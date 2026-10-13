@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"net"
 	"testing"
 	"time"
 
@@ -9,29 +10,28 @@ import (
 
 // mockMapSync 记录内核 map 同步调用，用于断言同步行为。
 type mockMapSync struct {
-	allowCalls []mapEntry
-	denyCalls  []mapEntry
-	tempCalls  []mapEntry
+	allowCalls []keyCall
+	denyCalls  []keyCall
+	tempCalls  []keyCall
 }
 
-type mapEntry struct {
-	ip4  uint32
-	port uint16
-	on   bool
+type keyCall struct {
+	key events.NetKey
+	on  bool
 }
 
-func (m *mockMapSync) SetAllow(ip4 uint32, port uint16, on bool) error {
-	m.allowCalls = append(m.allowCalls, mapEntry{ip4, port, on})
+func (m *mockMapSync) SetAllow(key events.NetKey, on bool) error {
+	m.allowCalls = append(m.allowCalls, keyCall{key, on})
 	return nil
 }
 
-func (m *mockMapSync) SetDeny(ip4 uint32, port uint16, on bool) error {
-	m.denyCalls = append(m.denyCalls, mapEntry{ip4, port, on})
+func (m *mockMapSync) SetDeny(key events.NetKey, on bool) error {
+	m.denyCalls = append(m.denyCalls, keyCall{key, on})
 	return nil
 }
 
-func (m *mockMapSync) SetTempAllow(ip4 uint32, port uint16, on bool) error {
-	m.tempCalls = append(m.tempCalls, mapEntry{ip4, port, on})
+func (m *mockMapSync) SetTempAllow(key events.NetKey, on bool) error {
+	m.tempCalls = append(m.tempCalls, keyCall{key, on})
 	return nil
 }
 
@@ -42,13 +42,30 @@ func newTestEngine(sync MapSync) *Engine {
 	})
 }
 
+// ipEvent 构造 v4 连接事件。DstIP4 采用与内核 user_ip4 一致的网络
+// 字节序数值语义：点分首段在最高位（192.168.0.1 → 0xC0A80001）。
 func ipEvent(ip string, port uint16, pid uint32, taint uint32) events.ConnectEvent {
-	ip4 := uint32(0)
-	// 与内核一致的网络字节序：低字节是第一段
-	for i, b := range []byte(parseDotted(ip)) {
-		ip4 |= uint32(b) << (8 * i)
+	b := parseDotted(ip)
+	return events.ConnectEvent{
+		Pid:     pid,
+		Family:  events.FamilyInet,
+		DstIP4:  uint32(b[0])<<24 | uint32(b[1])<<16 | uint32(b[2])<<8 | uint32(b[3]),
+		DstPort: port,
+		Taint:   taint,
 	}
-	return events.ConnectEvent{Pid: pid, DstIP4: ip4, DstPort: port, Taint: taint}
+}
+
+// ip6Event 构造 v6 连接事件（地址字节 = net.ParseIP 的 To16 形式，
+// 与内核 user_ip6 原始字节一致）。
+func ip6Event(ip string, port uint16, pid uint32, taint uint32) events.ConnectEvent {
+	evt := events.ConnectEvent{
+		Pid:     pid,
+		Family:  events.FamilyInet6,
+		DstPort: port,
+		Taint:   taint,
+	}
+	copy(evt.DstIP6[:], net.ParseIP(ip).To16())
+	return evt
 }
 
 func parseDotted(ip string) [4]byte {
@@ -120,6 +137,31 @@ func TestDecisionMatrix(t *testing.T) {
 			},
 			event:    ipEvent("10.0.0.2", 80, 100, events.TaintClean),
 			expected: events.DecisionDeny,
+		},
+		// ---- v6：与 v4 完全同一矩阵 ----
+		{
+			name:  "v6 污点进程+临时放行 → 放行（v6 审批闭环）",
+			setup: func(e *Engine) { _ = e.AddTempAllow("2001:db8::1", 443, time.Minute) },
+			event:    ip6Event("2001:db8::1", 443, 100, events.TaintDirty),
+			expected: events.DecisionAllow,
+		},
+		{
+			name:  "v6 拒绝列表 → 拒绝",
+			setup: func(e *Engine) { _ = e.AddDeny("2001:db8::bad", 80) },
+			event:    ip6Event("2001:db8::bad", 80, 100, events.TaintClean),
+			expected: events.DecisionDeny,
+		},
+		{
+			name:     "v6 干净进程+未知目标 → 需要审批（deny-by-default）",
+			setup:    func(e *Engine) {},
+			event:    ip6Event("2001:db8::9999", 443, 100, events.TaintClean),
+			expected: events.DecisionNeedReview,
+		},
+		{
+			name:  "v4 映射写法归一化后命中 v4 临时放行",
+			setup: func(e *Engine) { _ = e.AddTempAllow("::ffff:10.0.0.4", 80, time.Minute) },
+			event:    ipEvent("10.0.0.4", 80, 100, events.TaintDirty),
+			expected: events.DecisionAllow,
 		},
 	}
 

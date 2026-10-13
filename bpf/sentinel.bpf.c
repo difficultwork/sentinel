@@ -134,15 +134,27 @@ struct {
     __uint(pinning, LIBBPF_PIN_BY_NAME);
 } taint_map SEC(".maps");
 
-struct allow_key {
-    __u32 ip4;           /* 网络字节序 */
+/*
+ * 双栈地址键：allow/deny/temp_allow 三张 map 共用。
+ * v4 地址存 addr[0..3]（点分顺序，即网络序字节），其余清零；
+ * v6 地址存完整 16 字节。family 区分两族，两侧（C/Go）构造规则一致，
+ * 因此同一目标在内核与用户态必然得到相同键。
+ */
+struct net_key {
+    __u8  addr[16];
     __u16 port;          /* 主机字节序 */
-    __u16 _pad;
+    __u8  family;        /* AF_INET / AF_INET6 */
+    __u8  _pad;
+};                       /* 20 字节，无隐式填充 */
+
+/* 按值传递的 16 字节地址（供 always_inline 辅助函数，避免指针） */
+struct addr16 {
+    __u8 b[16];
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct allow_key);
+    __type(key, struct net_key);
     __type(value, __u32);
     __uint(max_entries, ALLOW_MAP_MAX_ENTRIES);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -150,7 +162,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct allow_key);
+    __type(key, struct net_key);
     __type(value, __u32);
     __uint(max_entries, ALLOW_MAP_MAX_ENTRIES);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -158,7 +170,7 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, struct allow_key);
+    __type(key, struct net_key);
     __type(value, __u32);
     __uint(max_entries, ALLOW_MAP_MAX_ENTRIES);
     __uint(pinning, LIBBPF_PIN_BY_NAME);
@@ -208,7 +220,64 @@ static __always_inline void fill_connect_common(struct connect_event *e,
     bpf_get_current_comm(&e->comm, sizeof(e->comm));
 }
 
-/* ====== 模块 1: connect 拦截 ====== */
+/* ====== 模块 1: connect 拦截（v4/v6 共用同一决策矩阵）====== */
+
+/*
+ * 统一决策 + 事件上报，sentinel_connect4/sentinel_connect6 共用：
+ *   1. 拒绝列表           → 阻断（DECISION_DENY）
+ *   2. 临时放行（已审批）  → 放行（人工审批优先于污点判定）
+ *   3. 进程已污染          → 阻断（DECISION_NEED_REVIEW）
+ *   4. 永久允许列表        → 放行
+ *   5. 未知目标            → 阻断（DECISION_NEED_REVIEW，deny-by-default）
+ * 返回 1 = 放行，0 = 阻断（阻断时上报 connect 事件）。
+ * 用户态 policy.Engine.Evaluate 遵循完全相同的顺序。
+ */
+static __always_inline int handle_connect(struct addr16 addr, __u16 family,
+                                          __u16 port)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 tgid = pid_tgid >> 32;
+    __u32 uid = bpf_get_current_uid_gid() >> 32;
+    __u64 cgid = bpf_get_current_cgroup_id();
+    __u32 taint = get_taint(tgid);
+
+    struct net_key nk = {};
+    nk.addr = addr;
+    nk.port = port;
+    nk.family = (__u8)family;
+
+    __u32 decision = DECISION_ALLOW;
+    int block = 0;
+
+    if (bpf_map_lookup_elem(&deny_map, &nk)) {
+        decision = DECISION_DENY;
+        block = 1;
+    } else if (!bpf_map_lookup_elem(&temp_allow_map, &nk)) {
+        if (taint == TAINT_DIRTY) {
+            decision = DECISION_NEED_REVIEW;
+            block = 1;
+        } else if (!bpf_map_lookup_elem(&allow_map, &nk)) {
+            decision = DECISION_NEED_REVIEW;
+            block = 1;
+        }
+    }
+
+    if (!block)
+        return 1;
+
+    struct connect_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (e) {
+        fill_connect_common(e, tgid, uid, cgid, family, port, taint, decision);
+        if (family == AF_INET) {
+            e->dst_ip4 = (__u32)addr.b[0] << 24 | (__u32)addr.b[1] << 16 |
+                         (__u32)addr.b[2] << 8 | (__u32)addr.b[3];
+        } else {
+            __builtin_memcpy(e->dst_ip6, addr.b, sizeof(e->dst_ip6));
+        }
+        bpf_ringbuf_submit(e, 0);
+    }
+    return 0;
+}
 
 SEC("cgroup/connect4")
 int sentinel_connect4(struct bpf_sock_addr *ctx)
@@ -216,92 +285,47 @@ int sentinel_connect4(struct bpf_sock_addr *ctx)
     if (ctx->family != AF_INET)
         return 1;
 
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = pid_tgid >> 32;
-    __u32 uid = bpf_get_current_uid_gid() >> 32;
-    __u64 cgid = bpf_get_current_cgroup_id();
+    /* user_ip4 是网络序数值（点分首字节为最高位），按位取出即为
+     * net_key 期望的点分顺序字节。 */
+    __u32 ip4 = ctx->user_ip4;
+    struct addr16 a = {};
+    a.b[0] = ip4 >> 24;
+    a.b[1] = ip4 >> 16;
+    a.b[2] = ip4 >> 8;
+    a.b[3] = ip4;
 
-    __u32 dst_ip4 = ctx->user_ip4;
-    __u16 dst_port = __bpf_ntohs(ctx->user_port);
-
-    struct allow_key akey = {
-        .ip4 = dst_ip4,
-        .port = dst_port,
-    };
-
-    __u32 taint = get_taint(tgid);
-
-    /* 1. 拒绝列表 → 立即阻断 */
-    if (bpf_map_lookup_elem(&deny_map, &akey)) {
-        struct connect_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-        if (e) {
-            fill_connect_common(e, tgid, uid, cgid, ctx->family, dst_port,
-                                taint, DECISION_DENY);
-            e->dst_ip4 = dst_ip4;
-            bpf_ringbuf_submit(e, 0);
-        }
-        return 0;
-    }
-
-    /* 2. 临时放行（人工审批已通过）→ 放行。审批是人的决定，优先于污点判定 */
-    if (bpf_map_lookup_elem(&temp_allow_map, &akey))
-        return 1;
-
-    /* 3. 已污染进程 → 任何目标都需要审批（无论是否在允许列表） */
-    if (taint == TAINT_DIRTY) {
-        struct connect_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-        if (e) {
-            fill_connect_common(e, tgid, uid, cgid, ctx->family, dst_port,
-                                TAINT_DIRTY, DECISION_NEED_REVIEW);
-            e->dst_ip4 = dst_ip4;
-            bpf_ringbuf_submit(e, 0);
-        }
-        return 0;
-    }
-
-    /* 4. 永久允许列表 → 放行 */
-    if (bpf_map_lookup_elem(&allow_map, &akey))
-        return 1;
-
-    /* 5. 未知目标 → 阻断并请求审批（deny-by-default） */
-    {
-        struct connect_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-        if (e) {
-            fill_connect_common(e, tgid, uid, cgid, ctx->family, dst_port,
-                                taint, DECISION_NEED_REVIEW);
-            e->dst_ip4 = dst_ip4;
-            bpf_ringbuf_submit(e, 0);
-        }
-        return 0;
-    }
+    return handle_connect(a, AF_INET, __bpf_ntohs(ctx->user_port));
 }
 
-/*
- * connect6：v6 目标不参与 IP 级允许/拒绝列表（map 以 v4 为键），
- * 仅对已污染进程强制审批；干净进程放行。已知限制，见 README。
- */
 SEC("cgroup/connect6")
 int sentinel_connect6(struct bpf_sock_addr *ctx)
 {
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = pid_tgid >> 32;
-    __u32 taint = get_taint(tgid);
-
-    if (taint != TAINT_DIRTY)
+    if (ctx->family != AF_INET6)
         return 1;
 
-    __u32 uid = bpf_get_current_uid_gid() >> 32;
-    __u64 cgid = bpf_get_current_cgroup_id();
-    __u16 dst_port = __bpf_ntohs(ctx->user_port);
+    struct addr16 a = {};
+    __builtin_memcpy(a.b, ctx->user_ip6, sizeof(a.b));
 
-    struct connect_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (e) {
-        fill_connect_common(e, tgid, uid, cgid, ctx->family, dst_port,
-                            TAINT_DIRTY, DECISION_NEED_REVIEW);
-        __builtin_memcpy(e->dst_ip6, ctx->user_ip6, sizeof(e->dst_ip6));
-        bpf_ringbuf_submit(e, 0);
+    /* v4 映射地址（::ffff:a.b.c.d，双栈 socket 常见）归一化为 v4，
+     * 使其命中 v4 列表，避免被当作"未知 v6"误报审批。 */
+    int v4mapped = 1;
+    for (int i = 0; i < 10; i++) {
+        if (a.b[i] != 0) {
+            v4mapped = 0;
+            break;
+        }
     }
-    return 0;
+    if (v4mapped && a.b[10] == 0xff && a.b[11] == 0xff) {
+        a.b[0] = a.b[12];
+        a.b[1] = a.b[13];
+        a.b[2] = a.b[14];
+        a.b[3] = a.b[15];
+        for (int i = 4; i < 16; i++)
+            a.b[i] = 0;
+        return handle_connect(a, AF_INET, __bpf_ntohs(ctx->user_port));
+    }
+
+    return handle_connect(a, AF_INET6, __bpf_ntohs(ctx->user_port));
 }
 
 /* ====== 模块 2: 污点传播 ====== */

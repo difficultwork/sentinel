@@ -173,10 +173,15 @@ sentinel/
 ### 1. 连接拦截（connect4/connect6）
 
 `BPF_PROG_TYPE_CGROUP_SOCK_ADDR` 程序 attach 到 cgroup 的
-`connect4`/`connect6` 钩子（bpf_link）。拦截顺序见决策矩阵。
+`connect4`/`connect6` 钩子（bpf_link）。两个 hook 共用同一决策函数
+`handle_connect()`，**v4/v6 走完全相同的决策矩阵**，差异仅在于从
+`bpf_sock_addr` 取地址的方式。
 
 - 拒绝/需审批的连接返回 0（connect() 立即失败），事件经 ringbuf 上报
-- 审批通过后目标写入 `temp_allow_map`，Agent 重试即放行
+- 三张列表 map 以双栈 `net_key`（16 字节地址 + 端口 + 协议族）为键，
+  v4/v6 条目统一管理；双栈 socket 的 v4 映射地址（`::ffff:a.b.c.d`）
+  在内核侧归一化为 v4，命中 v4 列表，避免误报审批
+- 审批通过后目标写入 `temp_allow_map`（v4/v6 均生效），Agent 重试即放行
 - attach 的 cgroup 子树即监控范围（默认 `/sys/fs/cgroup` 根）
 
 ### 2. 污点追踪
@@ -220,9 +225,9 @@ Agent 只接触 surrogate token（代理令牌）：TTL 限制（默认 1 小时
 ## 配置
 
 全部行为由 configs/sentinel.yaml 驱动（缺失字段回退内置默认值，非法值
-启动即报错）：审批地址/超时/令牌路径、eBPF 开关、初始允许/拒绝列表、
-临时放行 TTL、受监控路径、freezer 策略、凭证元信息（真实值走
-`value_env` 环境变量）等。
+启动即报错）：审批地址/超时/令牌路径、eBPF 开关、初始允许/拒绝列表
+（v4/v6 双栈，v6 条目写法 `[addr]:port`）、临时放行 TTL、受监控路径、
+freezer 策略、凭证元信息（真实值走 `value_env` 环境变量）等。
 
 ## 测试
 
@@ -237,14 +242,12 @@ make test   # 单元测试（-race）
 
 ## 已知限制
 
-1. **IPv6 支持有限**：connect6 仅对已污染进程强制审批，不参与 IP 级
-   允许/拒绝列表（map 以 IPv4 为键）。干净进程的 v6 连接直接放行。
-2. **异步重试模型**：cgroup sockaddr 钩子返回 0 时连接立即失败，Agent
+1. **异步重试模型**：cgroup sockaddr 钩子返回 0 时连接立即失败，Agent
    需自行重试（审批通过后重试即放行）。同步阻塞需 5.7+ 的 LSM hooks。
-3. **前缀级污点**：污染在 openat 进入时标记（保守策略，读取成功与否
+2. **前缀级污点**：污染在 openat 进入时标记（保守策略，读取成功与否
    不影响标记），可能产生误报。
-4. **单机模式**：审批通道监听 localhost，分布式部署需额外的状态同步。
-5. **冻结粒度**：按进程（tgid）迁移到专用 cgroup 后冻结，不感知同
+3. **单机模式**：审批通道监听 localhost，分布式部署需额外的状态同步。
+4. **冻结粒度**：按进程（tgid）迁移到专用 cgroup 后冻结，不感知同
    cgroup 内其他进程。
 
 ## 技术栈
@@ -252,7 +255,7 @@ make test   # 单元测试（-race）
 | 组件 | 技术 | 版本 |
 |------|------|------|
 | eBPF 编译器 | clang | >= 18.0.0 |
-| BPF 库 | cilium/ebpf | v0.15.0 |
+| BPF 库 | cilium/ebpf | v0.22.0 |
 | Go 编译器 | Go | >= 1.25 |
 | eBPF 程序类型 | CGROUP_SOCK_ADDR + tracepoint | kernel >= 5.15 |
 | 事件传输 | BPF_MAP_TYPE_RINGBUF (16 MiB) | kernel >= 5.8 |
@@ -264,6 +267,7 @@ make test   # 单元测试（-race）
 
 ```bash
 make toolchain    # clang >= 18, Go >= 1.25
+make deps         # 解析依赖并补全 go.mod/go.sum（升级 cilium/ebpf 后首次必跑）
 make build        # 字节码 + 嵌入 + 二进制
 make test         # 单元测试
 make check        # go vet

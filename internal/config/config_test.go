@@ -28,8 +28,10 @@ policy:
   allow:
     - "10.0.0.1:443"
     - "10.0.0.2:80"
+    - "[2001:db8::1]:53"
   deny:
     - "1.2.3.4:80"
+    - "[2001:db8::bad]:443"
   temp_allow_ttl: "2m"
   cleanup_interval: "15s"
 
@@ -89,8 +91,14 @@ logging:
 	if cfg.EBPF.EnableConnect6 {
 		t.Errorf("enable_connect6 应为 false")
 	}
-	if len(cfg.Policy.Allow) != 2 || cfg.Policy.Allow[0] != "10.0.0.1:443" {
+	if len(cfg.Policy.Allow) != 3 || cfg.Policy.Allow[0] != "10.0.0.1:443" {
 		t.Errorf("allow = %+v", cfg.Policy.Allow)
+	}
+	if cfg.Policy.Allow[2] != "[2001:db8::1]:53" {
+		t.Errorf("v6 allow 条目 = %q", cfg.Policy.Allow[2])
+	}
+	if len(cfg.Policy.Deny) != 2 || cfg.Policy.Deny[1] != "[2001:db8::bad]:443" {
+		t.Errorf("deny = %+v", cfg.Policy.Deny)
 	}
 	if cfg.Policy.TempAllowTTL != 2*time.Minute {
 		t.Errorf("temp_allow_ttl = %v", cfg.Policy.TempAllowTTL)
@@ -152,6 +160,7 @@ func TestValidateErrors(t *testing.T) {
 		{"超时为负", "approval:\n  timeout: \"-5m\"\n"},
 		{"allow 条目缺端口", "policy:\n  allow:\n    - \"10.0.0.1\"\n"},
 		{"allow 条目端口为0", "policy:\n  allow:\n    - \"10.0.0.1:0\"\n"},
+		{"v6 条目缺方括号", "policy:\n  allow:\n    - \"2001:db8::1:443\"\n"},
 		{"watch_paths 超条数", "taint:\n  watch_paths:\n    - \"/a1\"\n    - \"/a2\"\n    - \"/a3\"\n    - \"/a4\"\n    - \"/a5\"\n    - \"/a6\"\n    - \"/a7\"\n    - \"/a8\"\n    - \"/a9\"\n"},
 		{"凭证缺 value_env", "authd:\n  credentials:\n    - id: \"x\"\n      type: \"api_key\"\n"},
 	}

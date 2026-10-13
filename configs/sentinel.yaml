@@ -20,11 +20,14 @@ ebpf:
 # 策略引擎
 policy:
   # 初始允许/拒绝列表（运行时可通过 sentinel-cli 增删，双向同步内核 map）
+  # v4/v6 双栈；v6 条目必须加方括号
   allow:
-    - "93.184.216.34:443"   # example.com
-    - "142.250.80.46:443"   # google.com
+    - "93.184.216.34:443"          # example.com
+    - "142.250.80.46:443"          # google.com
+    - "[2606:4700:4700::1111]:53"  # cloudflare dns (v6)
   deny:
     - "1.2.3.4:80"
+    - "[2001:db8::1]:443"          # 文档示例段，演示 v6 拒绝条目
 
   temp_allow_ttl: "5m"      # 审批通过后的临时放行 TTL
   cleanup_interval: "30s"   # 过期条目清理周期

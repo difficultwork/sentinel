@@ -3,6 +3,7 @@ package events
 import (
 	"encoding/binary"
 	"errors"
+	"net"
 	"testing"
 )
 
@@ -136,4 +137,85 @@ func sizeOfStruct(v any) int {
 		return 5*4 + 16 + 16
 	}
 	return 0
+}
+
+// TestNetKeyRoundTrip 验证双栈 map 键的构造/反解一致性与归一化规则。
+func TestNetKeyRoundTrip(t *testing.T) {
+	// v4：Addr[0..3] 为点分顺序字节，family = FamilyInet
+	k4, err := NewNetKey("192.168.0.1", 443)
+	if err != nil {
+		t.Fatalf("v4 解析失败: %v", err)
+	}
+	if k4.Family != FamilyInet {
+		t.Errorf("v4 family = %d", k4.Family)
+	}
+	if k4.Addr[0] != 192 || k4.Addr[1] != 168 || k4.Addr[2] != 0 || k4.Addr[3] != 1 {
+		t.Errorf("v4 Addr 字节序错误: %v", k4.Addr)
+	}
+	for i := 4; i < 16; i++ {
+		if k4.Addr[i] != 0 {
+			t.Errorf("v4 Addr 高位字节应清零: %v", k4.Addr)
+			break
+		}
+	}
+	if got := k4.IPPort(); got != "192.168.0.1:443" {
+		t.Errorf("v4 IPPort = %q", got)
+	}
+
+	// v4 映射写法归一化为 v4（与内核 connect6 的归一化一致）
+	km, err := NewNetKey("::ffff:192.168.0.1", 443)
+	if err != nil {
+		t.Fatalf("v4-mapped 解析失败: %v", err)
+	}
+	if km != k4 {
+		t.Errorf("v4-mapped 应归一化为相同键: %+v vs %+v", km, k4)
+	}
+
+	// v6：完整 16 字节，family = FamilyInet6
+	k6, err := NewNetKey("2001:db8::1", 53)
+	if err != nil {
+		t.Fatalf("v6 解析失败: %v", err)
+	}
+	if k6.Family != FamilyInet6 {
+		t.Errorf("v6 family = %d", k6.Family)
+	}
+	if k6.Addr[0] != 0x20 || k6.Addr[1] != 0x01 || k6.Addr[2] != 0x0d || k6.Addr[3] != 0xb8 {
+		t.Errorf("v6 Addr 前缀字节错误: %v", k6.Addr)
+	}
+	if got := k6.IPPort(); got != "[2001:db8::1]:53" {
+		t.Errorf("v6 IPPort = %q", got)
+	}
+
+	// 非法输入报错
+	if _, err := NewNetKey("not-an-ip", 80); err == nil {
+		t.Errorf("非法 IP 应报错")
+	}
+}
+
+// TestConnectEventNetKey 验证事件字段构造的键与 NewNetKey 同构
+// （这是内核查表与用户态比对命中的前提）。
+func TestConnectEventNetKey(t *testing.T) {
+	evt := ConnectEvent{
+		Family:  FamilyInet,
+		DstIP4:  0xC0A80001, // 192.168.0.1（网络序数值，首段在最高位）
+		DstPort: 443,
+	}
+	want, _ := NewNetKey("192.168.0.1", 443)
+	if got := evt.NetKey(); got != want {
+		t.Errorf("v4 事件键 = %+v, 期望 %+v", got, want)
+	}
+
+	evt6 := ip6Event("2001:db8::1", 53)
+	want6, _ := NewNetKey("2001:db8::1", 53)
+	if got := evt6.NetKey(); got != want6 {
+		t.Errorf("v6 事件键 = %+v, 期望 %+v", got, want6)
+	}
+}
+
+func ip6Event(ip string, port uint16) ConnectEvent {
+	var evt ConnectEvent
+	evt.Family = FamilyInet6
+	evt.DstPort = port
+	copy(evt.DstIP6[:], net.ParseIP(ip).To16())
+	return evt
 }
