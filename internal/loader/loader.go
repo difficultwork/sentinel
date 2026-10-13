@@ -13,6 +13,7 @@
 package loader
 
 import (
+	_ "embed"
 	"errors"
 
 	"github.com/sentinel-sec/sentinel/internal/events"
