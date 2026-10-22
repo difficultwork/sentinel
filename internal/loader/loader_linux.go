@@ -68,7 +68,7 @@ func (l *Loader) Load() error {
 		l.logger(fmt.Sprintf("[loader] 警告: 清理旧 pin 目录失败: %s: %v", l.cfg.PinPath, err))
 	}
 	if err := os.MkdirAll(l.cfg.PinPath, 0755); err != nil {
-		return fmt.Errorf("创建 pin 目录失败 %s: %w", l.cfg.PinPath, err)
+		return fmt.Errorf("创建 pin 目录失败 %s: %w; 提示: 需先挂载 bpffs(mount -t bpf bpf /sys/fs/bpf)", l.cfg.PinPath, err)
 	}
 
 	// 3. 从嵌入字节码解析 collection spec

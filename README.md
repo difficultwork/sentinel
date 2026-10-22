@@ -112,6 +112,13 @@ eBPF 仅存在于 Linux，但代码按平台拆分（`loader_linux.go` /
 Windows 首次编译前放置一个空的 embed 占位文件即可：
 `New-Item -ItemType File internal\loader\sentinel.bpf.o`
 
+### 本地验证（Windows + Docker Desktop）
+
+无需 Linux 物理机：Docker Desktop 的 WSL2 内核（5.15+，cgroup v2）即可
+完成全部验证——编译、单测、dry-run、完整 eBPF 模式（容器 cgroup
+namespace 天然形成隔离验证单元）。镜像与步骤见
+**[docker/README.md](docker/README.md)**。
+
 ### 运行
 
 ```bash

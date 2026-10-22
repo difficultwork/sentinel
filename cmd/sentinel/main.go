@@ -272,7 +272,12 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 	// 冻结发起连接的进程（尽力而为）
 	if fz != nil && cfg.Freezer.FreezeOnReview {
 		if err := fz.AddPID(int(ce.Pid)); err != nil {
-			log.Printf("冻结前迁移进程 PID=%d 失败: %v", ce.Pid, err)
+			if errors.Is(err, syscall.ESRCH) {
+				// 拦截已生效, 进程在冻结前退出: 常态而非故障
+				log.Printf("进程 PID=%d 已退出(连接已被拦截, 无需冻结)", ce.Pid)
+			} else {
+				log.Printf("冻结前迁移进程 PID=%d 失败: %v", ce.Pid, err)
+			}
 		} else if err := fz.Freeze(); err != nil {
 			log.Printf("冻结 cgroup 失败: %v", err)
 		}

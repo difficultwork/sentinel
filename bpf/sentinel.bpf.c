@@ -99,23 +99,35 @@ struct taint_event {
     char  parent_comm[16]; /* 36 */
 };                       /* 52 */
 
-/* tracepoint: sched_process_fork 上下文 */
+/* tracepoint: sched_process_fork 上下文
+ *
+ * 必须与 /sys/kernel/tracing/events/sched/sched_process_fork/format 的
+ * 真实布局一致，尤其不可省略开头的 common_* 公共头（8 字节）：
+ * 校验器按真实字段边界检查 ctx 访问，跨字段读取会被拒绝
+ * （invalid bpf_context access），偏移错位则读到错误数据。
+ */
 struct sched_process_fork_ctx {
-    char  parent_comm[16];
-    __u32 parent_pid;
-    __u32 parent_prio;
-    char  child_comm[16];
-    __u32 child_pid;
-    __u32 child_prio;
-};
+    __u16 common_type;          /*  0 */
+    __u8  common_flags;         /*  2 */
+    __u8  common_preempt_count; /*  3 */
+    __s32 common_pid;           /*  4 */
+    char  parent_comm[16];      /*  8 */
+    __s32 parent_pid;           /* 24 */
+    char  child_comm[16];       /* 28 */
+    __s32 child_pid;            /* 44 */
+};                              /* 48 字节 */
 
-/* tracepoint: sys_enter_openat 上下文 */
+/* tracepoint: syscalls/sys_enter_openat 上下文（同理，对齐 tracefs format） */
 struct sys_enter_openat_ctx {
-    __u64 __syscall_nr;
-    __s64 dfd;
-    const char *filename;
-    __s64 flags;
-    __s64 mode;
+    __u16 common_type;          /*  0 */
+    __u8  common_flags;         /*  2 */
+    __u8  common_preempt_count; /*  3 */
+    __s32 common_pid;           /*  4 */
+    __s32 __syscall_nr;         /*  8 */
+    /* 12-15: 指针对齐填充 */
+    const char *filename;       /* 16 */
+    __s32 flags;                /* 24 */
+    __u16 mode;                 /* 28 */
 };
 
 /* 受监控路径前缀（由用户态从配置写入 watch_map） */
@@ -242,7 +254,7 @@ static __always_inline int handle_connect(struct addr16 addr, __u16 family,
     __u32 taint = get_taint(tgid);
 
     struct net_key nk = {};
-    nk.addr = addr;
+    __builtin_memcpy(nk.addr, &addr, sizeof(nk.addr));
     nk.port = port;
     nk.family = (__u8)family;
 
@@ -285,14 +297,15 @@ int sentinel_connect4(struct bpf_sock_addr *ctx)
     if (ctx->family != AF_INET)
         return 1;
 
-    /* user_ip4 是网络序数值（点分首字节为最高位），按位取出即为
-     * net_key 期望的点分顺序字节。 */
+    /* user_ip4 是 sockaddr 中的 4 个网络序字节; BPF 按本机序(小端)读成
+     * u32 后, 点分首字节位于最低位(LSB), 由低到高取出才是点分顺序。
+     * (取反会导致 allow/deny 键倒序失配, 如 1.2.3.4 变 4.3.2.1) */
     __u32 ip4 = ctx->user_ip4;
     struct addr16 a = {};
-    a.b[0] = ip4 >> 24;
-    a.b[1] = ip4 >> 16;
-    a.b[2] = ip4 >> 8;
-    a.b[3] = ip4;
+    a.b[0] = ip4;
+    a.b[1] = ip4 >> 8;
+    a.b[2] = ip4 >> 16;
+    a.b[3] = ip4 >> 24;
 
     return handle_connect(a, AF_INET, __bpf_ntohs(ctx->user_port));
 }
