@@ -1,0 +1,19 @@
+# Sentinel 本地验证编排（Docker Desktop）
+# 用法见 docker/README.md。
+#
+# privileged 是 eBPF 加载的硬性要求（CAP_BPF/CAP_SYS_ADMIN）；
+# tracefs 由 entrypoint.sh 按需挂载。
+
+services:
+  sentinel-verify:
+    image: sentinel:latest
+    privileged: true
+    # eBPF 事件携带的是 VM 全局 PID; 共享 PID 命名空间后,
+    # freezer 迁移/kill/ps 的 PID 才能一一对应(否则 cgroup.procs 写入 ESRCH)
+    pid: "host"
+    # 保持默认 cgroup namespace: /sys/fs/cgroup 指向本容器子树,
+    # connect4/6 只拦截本容器, 不影响 Docker Desktop 其他组件
+    stdin_open: true
+    tty: true
+    command: bash
+    # 容器内多终端: docker compose exec sentinel-verify bash

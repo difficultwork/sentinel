@@ -1,0 +1,50 @@
+# Sentinel 容器内验证配置
+# 与 configs/sentinel.yaml 的差异：
+#   1. allow 列表加白 CLI->API 回环与 Docker 内置 DNS（deny-by-default
+#      会拦掉容器内一切未知目标连接）
+#   2. watch_paths 对准 demo-agent 实际读取的 /tmp 敏感文件
+#   3. 审批超时放宽到 10 分钟，便于交互演示
+
+approval:
+  listen_addr: "127.0.0.1:7654"
+  timeout: "10m"
+  auto_deny_on_timeout: true
+  token_path: "/run/sentinel/api-token"
+
+ebpf:
+  pin_path: "/sys/fs/bpf/sentinel"
+  # 容器 cgroup namespace 的根 = 本容器在宿主上的 cgroup 子树，
+  # 在此 attach 即"只拦截本容器"，天然形成隔离的验证单元
+  cgroup_path: "/sys/fs/cgroup"
+  enable_connect4: true
+  enable_connect6: true
+  enable_taint_tracking: true
+
+policy:
+  allow:
+    - "127.0.0.1:7654"      # CLI -> 守护进程 API(回环)
+    - "127.0.0.11:53"       # Docker 内置 DNS
+    - "93.184.216.34:443"   # example.com(demo-agent 默认目标)
+    - "142.250.80.46:443"   # google.com(demo-agent 随机附加目标)
+    - "1.1.1.1:53"          # 同上
+    - "8.8.8.8:53"          # 同上
+  deny:
+    - "1.2.3.4:80"
+    - "[2001:db8::1]:443" # 文档示例段, 演示 v6 拒绝
+  temp_allow_ttl: "5m"
+  cleanup_interval: "30s"
+
+taint:
+  watch_paths:
+    - "/tmp/sentinel_demo_sensitive.txt" # demo-agent --taint 实际读取的文件
+    - "/root/.ssh"
+
+freezer:
+  enabled: true
+  cgroup_name: "sentinel_runtime"
+  freeze_on_review: true
+  thaw_on_approve: true
+  thaw_on_deny: false      # 拒绝后保持冻结, 演示人工处置
+
+authd:
+  enabled: false
