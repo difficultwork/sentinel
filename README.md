@@ -64,7 +64,7 @@ Sentinel 是一个操作系统级安全守护系统，专为约束不可信 AI A
 
 ```
 Agent connect() → 内核阻断 + 上报 NEED_REVIEW
-  → 守护进程冻结该进程（cgroup freezer）
+  → 守护进程冻结被治理容器（cgroup freezer, 进程树整体暂停）
   → 异步提交审批（不阻塞事件循环）
   → 用户: sentinel-cli approve <id>（token 鉴权）
   → 守护进程: 用户态临时放行 + 同步内核 temp_allow_map + 解冻
@@ -141,7 +141,7 @@ sudo ./bin/sentinel --config configs/sentinel.yaml
 ./bin/sentinel-cli status               # 守护进程整体状态
 ./bin/sentinel-cli pending              # 待审批请求
 ./bin/sentinel-cli approve <id>         # 批准（解冻 + 临时放行）
-./bin/sentinel-cli deny <id>            # 拒绝（默认保持冻结）
+./bin/sentinel-cli deny <id>            # 拒绝（目标拉黑 + 解冻）
 ./bin/sentinel-cli allow 1.2.3.4 443    # 添加允许条目（同步内核 map）
 ./bin/sentinel-cli unallow 1.2.3.4 443  # 移除允许条目
 ./bin/sentinel-cli deny-list 1.2.3.4 80 # 添加拒绝条目
@@ -228,16 +228,20 @@ sentinel/
 
 - 独立 HTTP 服务（默认 `127.0.0.1:7654`），所有 `/api/*` 端点要求
   `X-Sentinel-Token`（常量时间比较）；令牌写入 0600 文件，仅 root 可读
-- 审批提交非阻塞：请求进入待审队列 + 超时计时器（默认 5 分钟自动拒绝）
-- 审批结果经通道异步回流：批准 → 临时放行（用户态 + 内核 map）+ 解冻；
-  拒绝 → 按配置解冻或保持冻结
+- 审批提交非阻塞：请求进入待审队列 + 超时计时器（默认 5 分钟，超时解冻
+  并重新进入审批）
+- 审批结果经通道异步回流，对称语义：批准 → 临时放行（用户态 + 内核
+  map）+ 解冻；用户拒绝 → **持久拒绝**（重试被内核直接拒绝，不再触发
+  审批）+ 解冻；超时 → 仅解冻（不是对目标的裁决，重连重新进入审批）
 - 事件读取循环绝不被审批阻塞
 
 ### 5. cgroup Freezer
 
-需要审批时冻结发起连接的进程（v2: `cgroup.freeze`，v1: `freezer.state`
-自动探测），暂停其执行直到审批完成。冻结期间进程的超时计时器同样
-暂停——审批耗时不"吃掉"被冻结进程自身的超时预算。
+需要审批时冻结**被治理容器整体**（`sentinel-cli cgroup <path>` 挂载的
+cgroup 子树；v2: `cgroup.freeze`，v1: `freezer.state` 自动探测），Agent
+进程树连同子进程一并暂停。冻结粒度是 cgroup 而非单进程——没有退出竞态、
+PID 复用与 fork 逃逸问题；冻结期间进程的超时计时器同样暂停，审批耗时不
+"吃掉"被冻结进程自身的超时预算。
 
 ### 6. 凭证代理（hatch-authd）
 
@@ -260,7 +264,7 @@ make test   # 单元测试（-race）
 
 覆盖：策略决策矩阵全组合、临时放行 TTL 过期、内核 map 同步调用、
 配置解析（完整语法/默认值回退/非法值拒绝）、审批状态机
-（批准/拒绝/超时自动拒绝/重复提交/非阻塞）、事件解码器
+（批准/拒绝/超时/重复提交/非阻塞）、事件解码器
 （字段偏移/截断报错）。
 
 ## 已知限制
@@ -270,8 +274,8 @@ make test   # 单元测试（-race）
 2. **前缀级污点**：污染在 openat 进入时标记（保守策略，读取成功与否
    不影响标记），可能产生误报。
 3. **单机模式**：审批通道监听 localhost，分布式部署需额外的状态同步。
-4. **冻结粒度**：按进程（tgid）迁移到专用 cgroup 后冻结，不感知同
-   cgroup 内其他进程。
+4. **冻结粒度**：按被治理 cgroup 整体冻结（通常是一个容器），同 cgroup
+   内所有进程一并暂停，无法只豁免其中个别进程。
 
 ## 技术栈
 

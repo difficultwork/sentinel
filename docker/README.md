@@ -20,7 +20,7 @@ Docker Desktop VM (WSL2 内核 5.15+, cgroup v2)
 | 文件 | 作用 |
 |---|---|
 | `Dockerfile` | 工具链镜像（clang 18 + Go 1.25 + bpftool），构建一次即可 |
-| `entrypoint.sh` | 自动挂 bpffs/tracefs + 环境自检 |
+| `entrypoint.sh` | 自动挂 tracefs + 环境自检（map 不 pin, 无需 bpffs） |
 | `compose.yaml` | 双容器编排（纯 image 引用，无 build 段） |
 | `sentinel-verify.yaml` | 验证配置（加白回环/DNS、审批超时 10m；治理 cgroup 由 CLI 挂载） |
 | `attach-agent.sh` | 在 mgmt 容器内发现 agent cgroup 并挂载 |
@@ -65,7 +65,7 @@ function Agent($args) { docker exec sentinel-agent sh -c "cp /src/bin/demo-agent
 | 2 | `Agent "--target 1.2.3.4:80"` | deny 命中, 秒拒, 无审批卡 |
 | 3 | `Agent "--target 203.0.113.9:443"` | 拦截 + **整个 agent 容器冻结** + 一张审批卡; agent 重试日志停在某个 [重试 n/60] |
 | 4 | 场景 3 后: mgmt 内 `./bin/sentinel-cli pending` → `approve <id>` | 解冻容器 + temp_allow; agent 恢复重试并连接成功 |
-| 5 | 重复场景 3 后 `deny <id>` | 容器保持冻结; 处置 = `docker kill sentinel-agent`（SIGKILL 对冻结任务有效） |
+| 5 | 重复场景 3 后 `deny <id>` | 目标写入**持久 deny 列表** + 容器解冻; agent 重试被内核秒拒, **不再出新审批卡**; `sentinel-cli deny` 可见该条目, `deny remove` 可撤销 |
 | 6 | `Agent "--taint --target 93.184.216.34:443"` | 读取敏感文件 → 污点事件 → 白名单目标仍被拦 → 冻结 + 审批卡 |
 
 **冻结的可观测证据**：
@@ -99,8 +99,6 @@ docker stats --no-stream sentinel-agent            # CPU 停在 0
 | 症状 | 原因与处理 |
 |---|---|
 | `cgroup 目录不存在` (attach 时) | mgmt 容器没带 `cgroupns: host`; 或 State.Pid 过期(容器重建过), 重新 inspect |
-| `pin map ...: not on a bpf filesystem` | bpffs 未挂载(entrypoint 会自动挂; 手工: `mount -t bpf bpf /sys/fs/bpf`) |
-| `创建 pin 目录失败 ... no such file` | 同上 |
 | tracepoint attach 失败 | tracefs 未挂载(entrypoint 自动; 手工: `mount -t tracefs none /sys/kernel/tracing`) |
 | attach-agent.sh 报 /proc/PID 不存在 | mgmt 未用 `pid: host`; 或 agent 容器未运行 |
 | 场景 3 未冻结且无审批卡 | 目标未挂载(第 4 步漏了)——`sentinel-cli cgroup` 查看 governed 是否为空 |

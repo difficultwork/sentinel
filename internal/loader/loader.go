@@ -33,8 +33,6 @@ var sentinelBPFObj []byte
 
 // Config 是加载器的配置。
 type Config struct {
-	PinPath string // BPF map pin 目录（默认 /sys/fs/bpf/sentinel）
-
 	EnableConnect4      bool
 	EnableConnect6      bool
 	EnableTaintTracking bool

@@ -14,11 +14,11 @@ func TestParseFullConfig(t *testing.T) {
 approval:
   listen_addr: "127.0.0.1:9000"   # 行尾注释
   timeout: "90s"
-  auto_deny_on_timeout: false
+  auto_deny_on_timeout: false   # 已移除的键: 应被解析器忽略而非报错(旧配置兼容)
   token_path: "/tmp/token"
 
 ebpf:
-  pin_path: "/sys/fs/bpf/x"
+  pin_path: "/sys/fs/bpf/x"     # 已移除的键: 应被解析器忽略而非报错(旧配置兼容)
   enable_connect4: true
   enable_connect6: false
   enable_taint_tracking: true
@@ -43,7 +43,8 @@ taint:
     - ".key"
 
 freezer:
-  enabled: true
+  enabled: false
+  # 以下键已从配置面移除: 应被解析器忽略而非报错(旧配置文件兼容)
   freeze_on_review: true
   thaw_on_approve: false
   thaw_on_deny: true
@@ -83,9 +84,6 @@ logging:
 	if cfg.Approval.Timeout != 90*time.Second {
 		t.Errorf("timeout = %v", cfg.Approval.Timeout)
 	}
-	if cfg.Approval.AutoDenyOnTimeout {
-		t.Errorf("auto_deny_on_timeout 应为 false")
-	}
 	if cfg.EBPF.EnableConnect6 {
 		t.Errorf("enable_connect6 应为 false")
 	}
@@ -104,8 +102,8 @@ logging:
 	if len(cfg.Taint.WatchPaths) != 2 || cfg.Taint.WatchPaths[1] != "/home/user/.ssh" {
 		t.Errorf("watch_paths = %+v", cfg.Taint.WatchPaths)
 	}
-	if !cfg.Freezer.ThawOnDeny || cfg.Freezer.ThawOnApprove {
-		t.Errorf("freezer 开关错误: %+v", cfg.Freezer)
+	if cfg.Freezer.Enabled {
+		t.Errorf("freezer.enabled 应为 false: %+v", cfg.Freezer)
 	}
 	if cfg.Authd.SurrogateTTL != 30*time.Minute {
 		t.Errorf("surrogate_ttl = %v", cfg.Authd.SurrogateTTL)

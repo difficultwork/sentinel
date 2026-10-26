@@ -27,9 +27,8 @@ type Manager struct {
 	notify  chan policy.ApprovalRequest
 	results chan Result
 
-	timeout  time.Duration
-	autoDeny bool
-	logger   func(string)
+	timeout time.Duration
+	logger  func(string)
 }
 
 // pendingRequest 是等待审批的请求。
@@ -60,8 +59,9 @@ type Card struct {
 }
 
 // NewManager 创建审批管理器。
-// timeout 为单次审批的超时时间；autoDeny 为 true 时超时自动拒绝。
-func NewManager(timeout time.Duration, autoDeny bool, logger func(string)) *Manager {
+// timeout 为单次审批的超时时间（固定语义: 超时触发回流, 由消费端决定
+// 动作——解冻并重新进入审批, 非裁决）。
+func NewManager(timeout time.Duration, logger func(string)) *Manager {
 	if logger == nil {
 		logger = func(string) {}
 	}
@@ -72,9 +72,8 @@ func NewManager(timeout time.Duration, autoDeny bool, logger func(string)) *Mana
 		pending:  make(map[string]*pendingRequest),
 		notify:   make(chan policy.ApprovalRequest, 64),
 		results:  make(chan Result, 256),
-		timeout:  timeout,
-		autoDeny: autoDeny,
-		logger:   logger,
+		timeout: timeout,
+		logger:  logger,
 	}
 }
 
@@ -94,12 +93,10 @@ func (m *Manager) Submit(req policy.ApprovalRequest) error {
 		return fmt.Errorf("审批请求已存在: %s", req.RequestID)
 	}
 	p := &pendingRequest{req: req}
-	if m.autoDeny {
-		id := req.RequestID
-		p.timer = time.AfterFunc(m.timeout, func() {
-			m.resolveTimeout(id)
-		})
-	}
+	id := req.RequestID
+	p.timer = time.AfterFunc(m.timeout, func() {
+		m.resolveTimeout(id)
+	})
 	m.pending[req.RequestID] = p
 	m.mu.Unlock()
 
@@ -152,7 +149,8 @@ func (m *Manager) resolveUser(requestID string, approved bool) error {
 	return nil
 }
 
-// resolveTimeout 处理超时（自动拒绝）。
+// resolveTimeout 处理超时：移出待审队列并回流 TimedOut 结果
+// （不在此做放行/拉黑裁决，动作由消费端决定）。
 func (m *Manager) resolveTimeout(requestID string) {
 	m.mu.Lock()
 	p, ok := m.pending[requestID]
@@ -174,7 +172,7 @@ func (m *Manager) resolveTimeout(requestID string) {
 		Timestamp: time.Now(),
 		Request:   req,
 	})
-	m.logger(fmt.Sprintf("[approval] 审批超时, 自动拒绝: %s", requestID))
+	m.logger(fmt.Sprintf("[approval] 审批超时(非裁决): %s", requestID))
 }
 
 // emit 非阻塞发送结果；通道满时记日志丢弃（守护进程应为常驻消费者）。

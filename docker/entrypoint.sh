@@ -1,21 +1,14 @@
 #!/bin/bash
 # 容器入口：挂载 tracefs（tracepoint 需要）+ 环境自检
+# 注: map 不 pin 后无需 bpffs; cgroup sockaddr 钩子由 --privileged 提供
 set -u
 
-# cgroup sockaddr 钩子由 --privileged 提供；tracepoint 需要 tracefs。
-# Docker Desktop 的 VM 通常已挂载, 容器内未必可见, 这里按需挂载。
+# tracepoint 需要 tracefs。Docker Desktop 的 VM 通常已挂载,
+# 容器内未必可见, 这里按需挂载。
 if ! mountpoint -q /sys/kernel/tracing 2>/dev/null; then
     mkdir -p /sys/kernel/tracing 2>/dev/null
     mount -t tracefs none /sys/kernel/tracing 2>/dev/null \
         || echo "[entrypoint] 警告: tracefs 挂载失败, 污点追踪 tracepoint 将不可用"
-fi
-
-# BPF 文件系统(map pin 必须落在 bpffs 上): 容器内默认没有, 需要挂载。
-# 普通目录会报 "pin map to ...: not on a bpf filesystem"。
-if ! mountpoint -q /sys/fs/bpf 2>/dev/null; then
-    mkdir -p /sys/fs/bpf 2>/dev/null
-    mount -t bpf bpf /sys/fs/bpf 2>/dev/null \
-        || echo "[entrypoint] 警告: bpffs 挂载失败, eBPF map pin 将不可用(手工执行: mount -t bpf bpf /sys/fs/bpf)"
 fi
 
 echo "== Sentinel 验证环境自检 =="
@@ -36,11 +29,6 @@ if [ "$(stat -fc %T /sys/fs/cgroup 2>/dev/null)" = "cgroup2fs" ]; then
     echo "cgroup: v2(unified)"
 else
     echo "cgroup: 非 v2(freezer 将回退 v1 或降级)"
-fi
-if [ "$(stat -fc %T /sys/fs/bpf 2>/dev/null)" = "bpf" ]; then
-    echo "bpffs:  OK (/sys/fs/bpf)"
-else
-    echo "bpffs:  未挂载(完整模式需要: mount -t bpf bpf /sys/fs/bpf)"
 fi
 if [ -d /sys/kernel/tracing/events/sched ]; then
     echo "trace:  OK (/sys/kernel/tracing)"

@@ -8,7 +8,6 @@
 //   - bpf_probe_read_user_str（5.5+）安全读取用户态路径
 //   - bpf_get_current_cgroup_id（4.18+）无条件使用，事件携带 64 位 cgroup id
 //   - 有界循环（5.3+ 验证器）实现可配置路径前缀匹配，替代硬编码逐字节比较
-//   - LIBBPF_PIN_BY_NAME map 持久化
 //
 // 拦截策略（与用户态 policy.Engine.Evaluate 严格一致）：
 //   1. 拒绝列表           → 阻断 + 上报 EVENT_CONNECT(DENY)
@@ -143,7 +142,6 @@ struct {
     __type(key, __u32);        /* tgid */
     __type(value, __u32);      /* enum taint_state */
     __uint(max_entries, TAINT_MAP_MAX_ENTRIES);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } taint_map SEC(".maps");
 
 /*
@@ -169,7 +167,6 @@ struct {
     __type(key, struct net_key);
     __type(value, __u32);
     __uint(max_entries, ALLOW_MAP_MAX_ENTRIES);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } allow_map SEC(".maps");
 
 struct {
@@ -177,7 +174,6 @@ struct {
     __type(key, struct net_key);
     __type(value, __u32);
     __uint(max_entries, ALLOW_MAP_MAX_ENTRIES);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } deny_map SEC(".maps");
 
 struct {
@@ -185,7 +181,6 @@ struct {
     __type(key, struct net_key);
     __type(value, __u32);
     __uint(max_entries, ALLOW_MAP_MAX_ENTRIES);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } temp_allow_map SEC(".maps");
 
 /* 受监控路径表：key = 数组下标，value = 前缀。用户态启动时写入 */
@@ -194,7 +189,6 @@ struct {
     __type(key, __u32);
     __type(value, struct watch_path);
     __uint(max_entries, MAX_WATCH_PATHS);
-    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } watch_map SEC(".maps");
 
 /* 事件环形缓冲区（不 pin，每次启动由用户态重建 reader） */

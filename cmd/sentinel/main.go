@@ -66,7 +66,7 @@ func main() {
 	})
 
 	// 2. 审批管理器（异步）+ 引擎接入
-	mgr := approval.NewManager(cfg.Approval.Timeout, cfg.Approval.AutoDenyOnTimeout, logger)
+	mgr := approval.NewManager(cfg.Approval.Timeout, logger)
 	eng.SetApprovalSink(func(req policy.ApprovalRequest) {
 		if err := mgr.Submit(req); err != nil {
 			log.Printf("[policy] 提交审批失败: %v", err)
@@ -89,7 +89,6 @@ func main() {
 	// 4. eBPF 加载器（字节码已嵌入; cgroup 钩子由 sentinel-cli cgroup
 	//    <path> 运行时挂载）
 	ldr := loader.New(loader.Config{
-		PinPath:             cfg.EBPF.PinPath,
 		EnableConnect4:      cfg.EBPF.EnableConnect4,
 		EnableConnect6:      cfg.EBPF.EnableConnect6,
 		EnableTaintTracking: cfg.EBPF.EnableTaintTracking,
@@ -132,8 +131,8 @@ func main() {
 	}
 	defer apiSrv.Stop()
 
-	// 8. 审批结果消费者：批准 → 临时放行（含内核 map）+ 解冻；
-	//    拒绝/超时 → 按配置解冻或保持冻结
+	// 8. 审批结果消费者（对称语义）: 批准 → 临时放行(含内核 map)+ 解冻;
+	//    用户拒绝 → 持久拉黑 + 解冻; 超时 → 仅解冻(不改策略, 重新进入审批)
 	resultDone := make(chan struct{})
 	go func() {
 		defer close(resultDone)
@@ -269,7 +268,7 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 
 	// 冻结被治理容器整体（cgroup 粒度, 覆盖 Agent 进程树;
 	// 冻结后容器内连接停摆, 不再产生新事件）
-	if fz != nil && cfg.Freezer.FreezeOnReview {
+	if fz != nil {
 		if frozen, err := fz.IsFrozen(); err == nil && frozen {
 			log.Printf("  被治理容器已在冻结状态(等待审批)")
 		} else if err := fz.Freeze(); err != nil {
@@ -291,10 +290,13 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 		Timestamp: time.Now(),
 	}
 	if !eng.SubmitApproval(req) {
-		// 无审批通道：保守拒绝。若已冻结则按拒绝策略处理。
-		if fz != nil && cfg.Freezer.ThawOnDeny {
+		// 无审批通道: 对称的保守拒绝——目标拉黑 + 解冻,
+		// 防止解冻后重试再次触发审批
+		_ = eng.AddDeny(req.DstIP, req.DstPort)
+		if fz != nil {
 			_ = fz.Thaw()
 		}
+		log.Printf("无审批通道, 已保守拒绝: %s 拉黑并解冻", target)
 	}
 }
 
@@ -305,7 +307,7 @@ func handleApprovalResult(res approval.Result, eng *policy.Engine,
 	req := res.Request
 	outcome := "用户拒绝"
 	if res.TimedOut {
-		outcome = "超时自动拒绝"
+		outcome = "审批超时"
 	}
 
 	if res.Approved {
@@ -314,22 +316,34 @@ func handleApprovalResult(res approval.Result, eng *policy.Engine,
 		if err := eng.AddTempAllow(req.DstIP, req.DstPort, cfg.Policy.TempAllowTTL); err != nil {
 			log.Printf("写入临时放行失败: %v", err)
 		}
-		if fz != nil && cfg.Freezer.ThawOnApprove {
+		if fz != nil {
 			if err := fz.Thaw(); err != nil {
-				log.Printf("解冻 cgroup 失败: %v", err)
+				log.Printf("解冻被治理容器失败: %v", err)
+			} else {
+				log.Printf("已解冻被治理容器(重试将命中临时放行)")
 			}
 		}
 		return
 	}
 
+	// 用户拒绝: 政策裁决——目标写入持久 deny(重试被内核直接拒绝,
+	// 不会再触发审批卡), 然后解冻容器
 	log.Printf("[approval] %s %s(PID=%d)", outcome, req.RequestID, req.Pid)
+	if !res.TimedOut {
+		if err := eng.AddDeny(req.DstIP, req.DstPort); err != nil {
+			log.Printf("写入拒绝列表失败: %v", err)
+		}
+	}
 	if fz != nil {
-		if cfg.Freezer.ThawOnDeny {
-			if err := fz.Thaw(); err != nil {
-				log.Printf("解冻 cgroup 失败: %v", err)
-			}
+		if err := fz.Thaw(); err != nil {
+			log.Printf("解冻被治理容器失败: %v", err)
+		} else if res.TimedOut {
+			// 超时不是对目标的裁决: 不改策略, 解冻后重连将重新进入审批
+			log.Printf("已解冻被治理容器(超时未裁决, %s:%d 重连将重新审批)",
+				req.DstIP, req.DstPort)
 		} else {
-			log.Printf("被治理容器保持冻结(freezer.thaw_on_deny=false); 处置: docker kill <agent容器> 或解冻后排查")
+			log.Printf("已解冻被治理容器(目标 %s:%d 已拉黑, 重试将被内核拒绝)",
+				req.DstIP, req.DstPort)
 		}
 	}
 }

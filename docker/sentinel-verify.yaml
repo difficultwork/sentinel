@@ -8,12 +8,10 @@
 
 approval:
   listen_addr: "127.0.0.1:7654"
-  timeout: "10m"
-  auto_deny_on_timeout: true
+  timeout: "10m"               # 超时 = 解冻并重新进入审批(固定语义, 非裁决)
   token_path: "/run/sentinel/api-token"
 
 ebpf:
-  pin_path: "/sys/fs/bpf/sentinel"
   enable_connect4: true
   enable_connect6: true
   enable_taint_tracking: true
@@ -38,10 +36,7 @@ taint:
     - "/root/.ssh"
 
 freezer:
-  enabled: true
-  freeze_on_review: true
-  thaw_on_approve: true
-  thaw_on_deny: false      # 拒绝后保持冻结(整个 agent 容器), 演示人工处置
+  enabled: true             # 固定语义: 审批→冻结; 批准→temp_allow+解冻; 拒绝→持久deny+解冻; 超时→仅解冻
 
 authd:
   enabled: false

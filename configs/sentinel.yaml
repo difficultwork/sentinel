@@ -5,15 +5,14 @@
 # 审批与管理 HTTP 服务
 approval:
   listen_addr: "127.0.0.1:7654"
-  timeout: "5m"                # 单条审批的超时时间
-  auto_deny_on_timeout: true   # 超时后自动拒绝
+  timeout: "5m"                # 单次审批超时; 超时 = 解冻并重新进入审批(固定语义, 非裁决)
   token_path: "/run/sentinel/api-token"  # API 令牌文件（0600，CLI 自动读取）
 
 # eBPF 配置（字节码已嵌入二进制，此处无需指定 .o 路径）
-# 注意: 治理 cgroup 不在配置中指定——启动后用 sentinel-cli cgroup <path>
-# 挂载(attach connect 钩子 + 设为 freezer 冻结目标), 支持运行期切换
+#   - 治理 cgroup 无配置项: 启动后用 sentinel-cli cgroup <path> 挂载
+#   - map 不 pin(生命周期与进程一致), 无 bpffs 前提; 调试用
+#     bpftool map dump name sentinel_allow_map
 ebpf:
-  pin_path: "/sys/fs/bpf/sentinel"   # BPF map pin 目录
   enable_connect4: true
   enable_connect6: true
   enable_taint_tracking: true
@@ -53,11 +52,11 @@ taint:
     - ".secret"
 
 # cgroup freezer（容器粒度: 冻结 sentinel-cli cgroup 挂载的整个 cgroup 子树）
+# 固定语义, 无其他开关:
+#   需要审批 → 冻结;  批准 → temp_allow + 解冻;  用户拒绝 → 持久 deny + 解冻;
+#   超时 → 仅解冻(不算裁决, 目标重连会重新进入审批)
 freezer:
   enabled: true
-  freeze_on_review: true    # 需要审批时冻结被治理容器
-  thaw_on_approve: true     # 审批通过后解冻
-  thaw_on_deny: false       # 审批拒绝后保持冻结，等待人工处置
 
 # 凭证代理 (hatch-authd)
 authd:

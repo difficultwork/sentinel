@@ -24,13 +24,11 @@ type CredentialConfig struct {
 type Config struct {
 	Approval struct {
 		ListenAddr        string        // 审批 HTTP 服务监听地址
-		Timeout           time.Duration // 审批超时
-		AutoDenyOnTimeout bool          // 超时后自动拒绝
+		Timeout           time.Duration // 审批超时(固定语义: 超时解冻并重新进入审批)
 		TokenPath         string        // API 令牌文件路径（0600）
 	}
 
 	EBPF struct {
-		PinPath             string // BPF map pin 目录
 		EnableConnect4      bool
 		EnableConnect6      bool
 		EnableTaintTracking bool
@@ -49,10 +47,8 @@ type Config struct {
 	}
 
 	Freezer struct {
-		Enabled        bool
-		FreezeOnReview bool
-		ThawOnApprove  bool
-		ThawOnDeny     bool
+		Enabled bool // 唯一开关。固定语义: 需要审批→冻结;
+		// 批准→temp_allow+解冻; 用户拒绝→持久deny+解冻; 超时→仅解冻
 	}
 
 	Authd struct {
@@ -79,11 +75,10 @@ func Default() Config {
 	var c Config
 	c.Approval.ListenAddr = "127.0.0.1:7654"
 	c.Approval.Timeout = 5 * time.Minute
-	c.Approval.AutoDenyOnTimeout = true
 	c.Approval.TokenPath = "/run/sentinel/api-token"
 
-	c.EBPF.PinPath = "/sys/fs/bpf/sentinel"
-	// 治理 cgroup 不在配置中指定: 由 sentinel-cli cgroup <path> 运行时挂载
+	// 治理 cgroup 与 map pin 均无配置项: 前者由 sentinel-cli cgroup <path>
+	// 运行时挂载; 后者已移除(map 不 pin, 生命周期与进程一致)
 	c.EBPF.EnableConnect4 = true
 	c.EBPF.EnableConnect6 = true
 	c.EBPF.EnableTaintTracking = true
@@ -100,9 +95,6 @@ func Default() Config {
 	}
 
 	c.Freezer.Enabled = true
-	c.Freezer.FreezeOnReview = true
-	c.Freezer.ThawOnApprove = true
-	c.Freezer.ThawOnDeny = false
 
 	c.Authd.Enabled = true
 	c.Authd.SurrogateTTL = time.Hour
@@ -140,11 +132,9 @@ func decode(tree map[string]any, c *Config) error {
 	if m := getMap(tree, "approval"); m != nil {
 		c.Approval.ListenAddr = getString(m, "listen_addr", c.Approval.ListenAddr)
 		c.Approval.Timeout = getDuration(m, "timeout", c.Approval.Timeout)
-		c.Approval.AutoDenyOnTimeout = getBool(m, "auto_deny_on_timeout", c.Approval.AutoDenyOnTimeout)
 		c.Approval.TokenPath = getString(m, "token_path", c.Approval.TokenPath)
 	}
 	if m := getMap(tree, "ebpf"); m != nil {
-		c.EBPF.PinPath = getString(m, "pin_path", c.EBPF.PinPath)
 		c.EBPF.EnableConnect4 = getBool(m, "enable_connect4", c.EBPF.EnableConnect4)
 		c.EBPF.EnableConnect6 = getBool(m, "enable_connect6", c.EBPF.EnableConnect6)
 		c.EBPF.EnableTaintTracking = getBool(m, "enable_taint_tracking", c.EBPF.EnableTaintTracking)
@@ -161,9 +151,6 @@ func decode(tree map[string]any, c *Config) error {
 	}
 	if m := getMap(tree, "freezer"); m != nil {
 		c.Freezer.Enabled = getBool(m, "enabled", c.Freezer.Enabled)
-		c.Freezer.FreezeOnReview = getBool(m, "freeze_on_review", c.Freezer.FreezeOnReview)
-		c.Freezer.ThawOnApprove = getBool(m, "thaw_on_approve", c.Freezer.ThawOnApprove)
-		c.Freezer.ThawOnDeny = getBool(m, "thaw_on_deny", c.Freezer.ThawOnDeny)
 	}
 	if m := getMap(tree, "authd"); m != nil {
 		c.Authd.Enabled = getBool(m, "enabled", c.Authd.Enabled)

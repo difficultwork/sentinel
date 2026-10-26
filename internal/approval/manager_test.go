@@ -22,7 +22,7 @@ func drainResults(m *Manager) <-chan Result { return m.Results() }
 
 // TestApproveFlow 验证 提交→批准 结果回流。
 func TestApproveFlow(t *testing.T) {
-	m := NewManager(time.Minute, true, nil)
+	m := NewManager(time.Minute, nil)
 	results := drainResults(m)
 
 	if err := m.Submit(newTestReq("r1")); err != nil {
@@ -60,7 +60,7 @@ func TestApproveFlow(t *testing.T) {
 
 // TestDenyFlow 验证 提交→拒绝 结果回流。
 func TestDenyFlow(t *testing.T) {
-	m := NewManager(time.Minute, true, nil)
+	m := NewManager(time.Minute, nil)
 	results := drainResults(m)
 
 	_ = m.Submit(newTestReq("r2"))
@@ -80,7 +80,7 @@ func TestDenyFlow(t *testing.T) {
 
 // TestTimeoutAutoDeny 验证超时自动拒绝。
 func TestTimeoutAutoDeny(t *testing.T) {
-	m := NewManager(30*time.Millisecond, true, nil)
+	m := NewManager(30*time.Millisecond, nil)
 	results := drainResults(m)
 
 	_ = m.Submit(newTestReq("r3"))
@@ -100,7 +100,7 @@ func TestTimeoutAutoDeny(t *testing.T) {
 
 // TestSubmitIsNonBlocking 验证 Submit 不阻塞（无消费者时缓冲不满即返回）。
 func TestSubmitIsNonBlocking(t *testing.T) {
-	m := NewManager(time.Minute, false, nil)
+	m := NewManager(time.Minute, nil)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -119,7 +119,7 @@ func TestSubmitIsNonBlocking(t *testing.T) {
 
 // TestDuplicateIDRejected 验证重复请求 ID 被拒绝。
 func TestDuplicateIDRejected(t *testing.T) {
-	m := NewManager(time.Minute, true, nil)
+	m := NewManager(time.Minute, nil)
 	if err := m.Submit(newTestReq("dup")); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestDuplicateIDRejected(t *testing.T) {
 
 // TestPendingCards 验证卡片字段。
 func TestPendingCards(t *testing.T) {
-	m := NewManager(time.Minute, true, nil)
+	m := NewManager(time.Minute, nil)
 	_ = m.Submit(newTestReq("r4"))
 
 	cards := m.PendingCards()

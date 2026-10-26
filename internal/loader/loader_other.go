@@ -26,9 +26,6 @@ func New(cfg Config, logger func(string)) *Loader {
 	if logger == nil {
 		logger = func(string) {}
 	}
-	if cfg.PinPath == "" {
-		cfg.PinPath = "/sys/fs/bpf/sentinel"
-	}
 	l := &Loader{cfg: cfg, logger: logger}
 	l.logger(fmt.Sprintf("[loader] 当前平台 %s 不支持 eBPF, 完整模式受限(--dry-run 可用)", runtime.GOOS))
 	return l

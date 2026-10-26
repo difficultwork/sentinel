@@ -2,7 +2,8 @@
 
 // loader_linux.go 是加载器在 Linux 上的完整实现（目标内核 >= 5.15）：
 //   - 使用 BPF ring buffer（非 perf array）接收内核事件
-//   - map 通过 LIBBPF_PIN_BY_NAME + MapOptions.PinPath 自动 pin
+//   - map 不 pin: 生命周期与进程一致, 无 bpffs 运行前提
+//     (内核侧调试: bpftool map dump name sentinel_allow_map)
 //   - cgroup/connect4/6 通过 link.AttachCgroup 挂载（bpf_link）
 
 package loader
@@ -41,9 +42,6 @@ func New(cfg Config, logger func(string)) *Loader {
 	if logger == nil {
 		logger = func(string) {}
 	}
-	if cfg.PinPath == "" {
-		cfg.PinPath = "/sys/fs/bpf/sentinel"
-	}
 	return &Loader{cfg: cfg, logger: logger}
 }
 
@@ -62,24 +60,15 @@ func (l *Loader) Load() error {
 		l.logger(fmt.Sprintf("[loader] 提示: memlock 调整跳过: %v", err))
 	}
 
-	// 2. 清理旧 pin 目录，保证本次加载状态确定
-	if err := os.RemoveAll(l.cfg.PinPath); err != nil {
-		l.logger(fmt.Sprintf("[loader] 警告: 清理旧 pin 目录失败: %s: %v", l.cfg.PinPath, err))
-	}
-	if err := os.MkdirAll(l.cfg.PinPath, 0755); err != nil {
-		return fmt.Errorf("创建 pin 目录失败 %s: %w; 提示: 需先挂载 bpffs(mount -t bpf bpf /sys/fs/bpf)", l.cfg.PinPath, err)
-	}
-
-	// 3. 从嵌入字节码解析 collection spec
+	// 2. 从嵌入字节码解析 collection spec
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(sentinelBPFObj))
 	if err != nil {
 		return fmt.Errorf("解析嵌入 BPF 字节码失败(二进制与字节码不匹配? 重新 make build): %w", err)
 	}
 
-	// 4. 加载 collection；带 pin 选项的 map 自动按名 pin
-	coll, err := ebpf.NewCollectionWithOptions(spec, ebpf.CollectionOptions{
-		Maps: ebpf.MapOptions{PinPath: l.cfg.PinPath},
-	})
+	// 3. 加载 collection（map 不 pin: 生命周期与进程一致,
+	//    内核侧调试用 bpftool map ... name <map名> 即可）
+	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
 		return fmt.Errorf("加载 BPF collection 失败(需要 root/CAP_BPF, 内核 >= 5.15): %w", err)
 	}
@@ -87,17 +76,17 @@ func (l *Loader) Load() error {
 	l.logger(fmt.Sprintf("[loader] collection 已加载: programs=%d maps=%d",
 		len(coll.Programs), len(coll.Maps)))
 
-	// 5. attach tracepoint（污点追踪）
+	// 4. attach tracepoint（污点追踪）
 	if l.cfg.EnableTaintTracking {
 		l.attachTracepoints(coll)
 	}
 
-	// 6. cgroup connect 钩子不做启动挂载：治理目标由 sentinel-cli
+	// 5. cgroup connect 钩子不做启动挂载：治理目标由 sentinel-cli
 	//    cgroup <path> 运行时指定（AttachCgroup），支持"管理面与被治理
 	//    容器分离"的拓扑与运行期切换目标。
 	l.logger("[loader] cgroup 钩子待挂载: 用 sentinel-cli cgroup <path> 指定被治理容器")
 
-	// 7. ring buffer reader
+	// 6. ring buffer reader
 	eventsMap, ok := coll.Maps["events"]
 	if !ok {
 		return fmt.Errorf("BPF 字节码缺少 events ringbuf map")
@@ -371,12 +360,6 @@ func (l *Loader) Close() error {
 		l.coll.Close()
 		l.coll = nil
 	}
-	// 清理 pin 文件
-	if entries, err := os.ReadDir(l.cfg.PinPath); err == nil {
-		for _, entry := range entries {
-			_ = os.Remove(filepath.Join(l.cfg.PinPath, entry.Name()))
-		}
-	}
 
 	l.loaded = false
 	l.logger("[loader] eBPF 程序已卸载")
@@ -402,6 +385,6 @@ func (l *Loader) Stats() string {
 	if l.governed != "" {
 		gov = " governed=" + l.governed
 	}
-	return fmt.Sprintf("已加载 | maps=%d programs=%d links=%d%s pin=%s",
-		len(l.coll.Maps), len(l.coll.Programs), len(l.links)+len(l.cgroupLinks), gov, l.cfg.PinPath)
+	return fmt.Sprintf("已加载 | maps=%d programs=%d links=%d%s",
+		len(l.coll.Maps), len(l.coll.Programs), len(l.links)+len(l.cgroupLinks), gov)
 }
