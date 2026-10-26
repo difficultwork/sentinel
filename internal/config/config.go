@@ -85,7 +85,8 @@ func Default() Config {
 	c.Approval.TokenPath = "/run/sentinel/api-token"
 
 	c.EBPF.PinPath = "/sys/fs/bpf/sentinel"
-	c.EBPF.CgroupPath = "/sys/fs/cgroup"
+	// CgroupPath 默认留空: 启动不挂 cgroup 钩子, 由 sentinel-cli
+	// cgroup <path> 运行时挂载(容器粒度治理拓扑)
 	c.EBPF.EnableConnect4 = true
 	c.EBPF.EnableConnect6 = true
 	c.EBPF.EnableTaintTracking = true

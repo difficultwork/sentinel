@@ -1,15 +1,17 @@
-// Package freezer 封装进程冻结操作，用于暂停待审批的进程。
+// Package freezer 封装对被治理容器(cgroup)的整体冻结/解冻。
 //
-// Sentinel 使用 cgroup freezer（而非 SIGSTOP）暂停待审批的进程：
-//   - 被冻结进程停止调度，不占用 CPU
-//   - 超时计时器同样冻结，审批耗时不影响进程自身的超时逻辑
-//   - 审批通过后解冻恢复执行；拒绝后可保持冻结直到人工处置
+// 设计（容器粒度治理）：
+//   - 冻结对象是外部 cgroup（通常是 AI Agent 所在容器的 cgroup），
+//     Sentinel 只拨动开关，不创建/删除/迁移任何 cgroup——目标归
+//     容器运行时（docker/runc）管理。
+//   - 冻结整个 cgroup 子树 = 冻结 Agent 进程树（含 MCP/工具子进程），
+//     天然规避 per-PID 冻结的退出竞态、PID 复用、fork 逃逸与
+//     PID 命名空间翻译问题。
 //
-// 后端选择：
-//   - cgroup v2（5.15 默认）：/sys/fs/cgroup/<name>/cgroup.freeze（0/1），
-//     进程写入 cgroup.procs
-//   - cgroup v1 回退：freezer 控制器挂载点下 <name>/freezer.state
-//     （FROZEN/THAWED），进程写入 tasks
+// 后端：
+//   - cgroup v2：写 <path>/cgroup.freeze（1/0）；冻结是异步操作，
+//     通过 <path>/cgroup.events 的 "frozen" 字段确认实际完成
+//   - cgroup v1 回退：<path>/freezer.state（FROZEN/THAWED），状态同步
 package freezer
 
 import (
@@ -17,181 +19,180 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
-// Freezer 管理一个 cgroup 的冻结/解冻操作。
+// 默认状态确认超时（v2 冻结是异步的，任务可能处于不可中断睡眠）
+const stateTimeout = 5 * time.Second
+
+// Freezer 管理一个外部 cgroup 的冻结/解冻。
 type Freezer struct {
-	backend    string // "v2" 或 "v1"
-	cgroupPath string // 本 Sentinel 专用 cgroup 目录
-	// v2: cgroup.freeze；v1: freezer.state
-	freezeFile string
-	// v2: cgroup.procs；v1: tasks
-	procsFile string
-	logger    func(string)
+	opMu    sync.Mutex // 串行化 Freeze/Thaw（并发事件可能同时触发）
+	target  string     // 被治理 cgroup 的绝对路径（外部所有，勿删除）
+	backend string     // "v2" / "v1"，SetTarget 时确定
+	logger  func(string)
 }
 
-// New 创建 Freezer 实例。cgroupName 是 cgroup 名称（如 "sentinel_runtime"）。
-func New(cgroupName string, logger func(string)) (*Freezer, error) {
+// New 创建 Freezer 实例。目标 cgroup 由 SetTarget 在运行期指定
+// （见 sentinel-cli cgroup <path>）。
+func New(logger func(string)) *Freezer {
 	if logger == nil {
 		logger = func(string) {}
 	}
-	if cgroupName == "" {
-		cgroupName = "sentinel_runtime"
-	}
-
-	if isCgroupV2() {
-		cgroupPath := filepath.Join("/sys/fs/cgroup", cgroupName)
-		if err := os.MkdirAll(cgroupPath, 0755); err != nil {
-			return nil, fmt.Errorf("创建 cgroup v2 目录失败: %w", err)
-		}
-		f := &Freezer{
-			backend:    "v2",
-			cgroupPath: cgroupPath,
-			freezeFile: filepath.Join(cgroupPath, "cgroup.freeze"),
-			procsFile:  filepath.Join(cgroupPath, "cgroup.procs"),
-			logger:     logger,
-		}
-		f.logger(fmt.Sprintf("[freezer] cgroup v2 创建: %s", cgroupPath))
-		return f, nil
-	}
-
-	root := findFreezerV1Mount()
-	if root == "" {
-		return nil, fmt.Errorf("未找到可用的 cgroup freezer(v2 unified 或 v1 freezer 控制器)")
-	}
-	cgroupPath := filepath.Join(root, cgroupName)
-	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
-		return nil, fmt.Errorf("创建 cgroup v1 目录失败: %w", err)
-	}
-	f := &Freezer{
-		backend:    "v1",
-		cgroupPath: cgroupPath,
-		freezeFile: filepath.Join(cgroupPath, "freezer.state"),
-		procsFile:  filepath.Join(cgroupPath, "tasks"),
-		logger:     logger,
-	}
-	f.logger(fmt.Sprintf("[freezer] cgroup v1 创建: %s", cgroupPath))
-	return f, nil
+	return &Freezer{logger: logger}
 }
 
-// Backend 返回当前后端（"v2" / "v1"）。
+// SetTarget 指定被治理的 cgroup（外部容器），并检测可用后端。
+// 可重复调用以切换目标（切换前应先解冻旧目标）。
+func (f *Freezer) SetTarget(path string) error {
+	if path == "" {
+		return fmt.Errorf("cgroup 路径为空")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("cgroup 路径必须是绝对路径: %s", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("cgroup 目录不存在(在 cgroupns=host 的容器内执行?): %s: %w", path, err)
+	}
+
+	backend := "v1"
+	if _, err := os.Stat(filepath.Join(path, "cgroup.freeze")); err == nil {
+		backend = "v2"
+	} else if _, err := os.Stat(filepath.Join(path, "freezer.state")); err != nil {
+		return fmt.Errorf("%s 既无 cgroup.freeze(v2) 也无 freezer.state(v1), 不是可冻结的 cgroup", path)
+	}
+
+	f.target, f.backend = path, backend
+	f.logger(fmt.Sprintf("[freezer] 治理目标: %s(后端 %s)", path, backend))
+	return nil
+}
+
+// Target 返回当前治理的 cgroup 路径（未设置时为空串）。
+func (f *Freezer) Target() string { return f.target }
+
+// Backend 返回当前后端（"v2"/"v1"；未设置目标时为空串）。
 func (f *Freezer) Backend() string { return f.backend }
 
-// CgroupPath 返回 cgroup 路径。
-func (f *Freezer) CgroupPath() string { return f.cgroupPath }
-
-// AddPID 向 cgroup 添加进程。
-func (f *Freezer) AddPID(pid int) error {
-	f.logger(fmt.Sprintf("[freezer] 添加进程 PID=%d 到 cgroup", pid))
-	return os.WriteFile(f.procsFile, []byte(fmt.Sprintf("%d", pid)), 0644)
-}
-
-// Freeze 冻结 cgroup 内所有任务。
+// Freeze 冻结目标 cgroup 内全部任务（异步，等待实际生效）。
 func (f *Freezer) Freeze() error {
+	f.opMu.Lock()
+	defer f.opMu.Unlock()
+	if f.target == "" {
+		return fmt.Errorf("freezer 目标未设置(先 sentinel-cli cgroup <path>)")
+	}
 	switch f.backend {
 	case "v2":
-		if err := os.WriteFile(f.freezeFile, []byte("1"), 0644); err != nil {
+		if err := os.WriteFile(f.freezeFile(), []byte("1"), 0644); err != nil {
 			return fmt.Errorf("冻结失败: %w", err)
 		}
-		return f.waitFor(func(state string) bool { return state == "1" }, 5*time.Second)
+		return f.waitForV2(1)
 	default:
-		if err := os.WriteFile(f.freezeFile, []byte("FROZEN"), 0644); err != nil {
+		if err := os.WriteFile(f.freezeFile(), []byte("FROZEN"), 0644); err != nil {
 			return fmt.Errorf("冻结失败: %w", err)
 		}
-		// v1 可能短暂经过 FREEZING 状态
-		return f.waitFor(func(state string) bool { return state == "FROZEN" }, 5*time.Second)
+		return f.waitForV1("FROZEN")
 	}
 }
 
-// Thaw 解冻 cgroup 内所有任务。
+// Thaw 解冻目标 cgroup。
 func (f *Freezer) Thaw() error {
+	f.opMu.Lock()
+	defer f.opMu.Unlock()
+	if f.target == "" {
+		return fmt.Errorf("freezer 目标未设置(先 sentinel-cli cgroup <path>)")
+	}
 	switch f.backend {
 	case "v2":
-		if err := os.WriteFile(f.freezeFile, []byte("0"), 0644); err != nil {
+		if err := os.WriteFile(f.freezeFile(), []byte("0"), 0644); err != nil {
 			return fmt.Errorf("解冻失败: %w", err)
 		}
-		return f.waitFor(func(state string) bool { return state == "0" }, 5*time.Second)
+		return f.waitForV2(0)
 	default:
-		if err := os.WriteFile(f.freezeFile, []byte("THAWED"), 0644); err != nil {
+		if err := os.WriteFile(f.freezeFile(), []byte("THAWED"), 0644); err != nil {
 			return fmt.Errorf("解冻失败: %w", err)
 		}
-		return f.waitFor(func(state string) bool { return state == "THAWED" }, 5*time.Second)
+		return f.waitForV1("THAWED")
 	}
 }
 
-// IsFrozen 检查当前是否处于冻结状态。
+// IsFrozen 返回目标当前是否处于冻结状态。
 func (f *Freezer) IsFrozen() (bool, error) {
-	state, err := f.readState()
-	if err != nil {
-		return false, err
+	if f.target == "" {
+		return false, fmt.Errorf("freezer 目标未设置")
 	}
 	switch f.backend {
 	case "v2":
-		return state == "1", nil
+		return f.frozenStateV2() == 1, nil
 	default:
-		return state == "FROZEN", nil
-	}
-}
-
-func (f *Freezer) readState() (string, error) {
-	data, err := os.ReadFile(f.freezeFile)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(data)), nil
-}
-
-// waitFor 轮询等待状态满足条件。
-func (f *Freezer) waitFor(ok func(string) bool, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		state, err := f.readState()
+		state, err := os.ReadFile(f.freezeFile())
 		if err != nil {
-			return err
+			return false, err
 		}
-		if ok(state) {
+		return strings.TrimSpace(string(state)) == "FROZEN", nil
+	}
+}
+
+// Stats 返回状态摘要（供 /api/status 与日志）。
+func (f *Freezer) Stats() string {
+	if f.target == "" {
+		return "未指定目标(用 sentinel-cli cgroup <path> 挂载)"
+	}
+	frozen, err := f.IsFrozen()
+	if err != nil {
+		return fmt.Sprintf("%s [%s] 状态未知: %v", f.target, f.backend, err)
+	}
+	state := "运行中"
+	if frozen {
+		state = "已冻结"
+	}
+	return fmt.Sprintf("%s [%s] %s", f.target, f.backend, state)
+}
+
+func (f *Freezer) freezeFile() string {
+	if f.backend == "v2" {
+		return filepath.Join(f.target, "cgroup.freeze")
+	}
+	return filepath.Join(f.target, "freezer.state")
+}
+
+// frozenStateV2 读取 cgroup.events 的 frozen 字段（实际状态，非请求值）。
+func (f *Freezer) frozenStateV2() int {
+	data, err := os.ReadFile(filepath.Join(f.target, "cgroup.events"))
+	if err != nil {
+		return -1
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == "frozen" {
+			if fields[1] == "1" {
+				return 1
+			}
+			return 0
+		}
+	}
+	return -1
+}
+
+func (f *Freezer) waitForV2(want int) error {
+	deadline := time.Now().Add(stateTimeout)
+	for time.Now().Before(deadline) {
+		if f.frozenStateV2() == want {
 			return nil
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return fmt.Errorf("等待 cgroup 冻结状态超时")
+	return fmt.Errorf("等待 cgroup frozen=%d 超时(任务可能处于不可中断睡眠): %s", want, f.target)
 }
 
-// Destroy 删除 cgroup（要求已解冻且无任务）。
-func (f *Freezer) Destroy() error {
-	_ = f.Thaw()
-	f.logger(fmt.Sprintf("[freezer] 删除 cgroup: %s", f.cgroupPath))
-	return os.Remove(f.cgroupPath)
-}
-
-// isCgroupV2 检测系统是否以 cgroup v2 unified 挂载。
-func isCgroupV2() bool {
-	_, err := os.Stat("/sys/fs/cgroup/cgroup.controllers")
-	return err == nil
-}
-
-// findFreezerV1Mount 查找 cgroup v1 freezer 控制器挂载点。
-func findFreezerV1Mount() string {
-	// 方式 1: 标准独立挂载位置
-	if _, err := os.Stat("/sys/fs/cgroup/freezer/freezer.state"); err == nil {
-		return "/sys/fs/cgroup/freezer"
-	}
-	// 方式 2: 解析 /proc/mounts
-	data, err := os.ReadFile("/proc/mounts")
-	if err != nil {
-		return ""
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 || fields[2] != "cgroup" {
-			continue
+func (f *Freezer) waitForV1(want string) error {
+	deadline := time.Now().Add(stateTimeout)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(f.freezeFile())
+		if err == nil && strings.TrimSpace(string(data)) == want {
+			return nil
 		}
-		for _, opt := range strings.Split(fields[3], ",") {
-			if opt == "freezer" {
-				return fields[1]
-			}
-		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return ""
+	return fmt.Errorf("等待 freezer.state=%s 超时: %s", want, f.target)
 }

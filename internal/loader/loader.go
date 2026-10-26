@@ -34,7 +34,7 @@ var sentinelBPFObj []byte
 // Config 是加载器的配置。
 type Config struct {
 	PinPath    string // BPF map pin 目录（默认 /sys/fs/bpf/sentinel）
-	CgroupPath string // cgroup attach 根路径（默认 /sys/fs/cgroup）
+	CgroupPath string // cgroup attach 目标；留空 = 等待运行时挂载(AttachCgroup)
 
 	EnableConnect4      bool
 	EnableConnect6      bool

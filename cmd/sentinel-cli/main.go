@@ -12,6 +12,9 @@
 //   sentinel-cli taint <pid>           手动标记进程污点
 //   sentinel-cli untaint <pid>         手动清除进程污点
 //   sentinel-cli injections            查看凭证注入审计日志
+//   sentinel-cli cgroup                查看当前治理的 cgroup
+//   sentinel-cli cgroup <path>         挂载被治理 cgroup(拦截+冻结目标)
+//                                       例: cgroup /sys/fs/cgroup/docker/<id>
 //
 // API 令牌解析顺序：--token > $SENTINEL_API_TOKEN > 令牌文件
 // （默认 /run/sentinel/api-token，回退 $TMPDIR/sentinel-api-token）。
@@ -24,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +102,15 @@ func main() {
 	case "injections":
 		client.getAndPrint("/api/injections")
 
+	case "cgroup":
+		if len(args) < 2 {
+			// 无参数: 查询当前治理目标
+			client.getAndPrint("/api/cgroup")
+			break
+		}
+		q := url.Values{"path": {args[1]}}
+		client.postAndPrint("/api/cgroup/attach?" + q.Encode())
+
 	default:
 		fmt.Printf("未知命令: %s\n\n", cmd)
 		printUsage()
@@ -123,6 +136,9 @@ func printUsage() {
   taint <pid>               手动标记进程污点
   untaint <pid>             手动清除进程污点
   injections                查看凭证注入审计日志
+  cgroup                    查看当前治理的 cgroup 与 freezer 状态
+  cgroup <path>             挂载被治理 cgroup(connect 拦截 + 冻结目标)
+                            例: cgroup /sys/fs/cgroup/docker/<容器id>
 
 选项:
   -api <url>                Sentinel API 地址 (默认 http://127.0.0.1:7654)

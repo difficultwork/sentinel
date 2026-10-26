@@ -95,18 +95,11 @@ func main() {
 		EnableTaintTracking: cfg.EBPF.EnableTaintTracking,
 	}, logger)
 
-	// 5. cgroup freezer（失败仅降级，不阻断）
+	// 5. cgroup freezer（容器粒度治理；目标由 sentinel-cli cgroup <path>
+	//    运行时指定，或跟随配置的 cgroup_path）
 	var fz *freezer.Freezer
-	freezerBackend := "不可用"
 	if cfg.Freezer.Enabled && !*dryRun {
-		fz, err = freezer.New(cfg.Freezer.CgroupName, logger)
-		if err != nil {
-			log.Printf("警告: cgroup freezer 初始化失败(审批暂停功能不可用): %v", err)
-			fz = nil
-		} else {
-			freezerBackend = "cgroup " + fz.Backend()
-			defer fz.Destroy()
-		}
+		fz = freezer.New(logger)
 	}
 
 	// 6. API 令牌：每次启动随机生成，写入 0600 文件供 CLI 使用
@@ -123,9 +116,14 @@ func main() {
 		Engine:     eng,
 		Authd:      authProxy,
 		Loader:     ldr,
+		Freezer:    fz,
 		Token:      token,
 		Extra: func() map[string]any {
-			return map[string]any{"freezer": freezerBackend}
+			state := "未启用"
+			if fz != nil {
+				state = fz.Stats()
+			}
+			return map[string]any{"freezer": state}
 		},
 		Logger: logger,
 	})
@@ -169,6 +167,14 @@ func main() {
 		log.Printf("eBPF 状态: %s", ldr.Stats())
 
 		eng.SetMapSync(ldr)
+
+		// 配置式挂载(cgroup_path 非空)时, 同步 freezer 冻结目标;
+		// 留空则等待 sentinel-cli cgroup <path>(attach 时由 API 同步)
+		if gov := ldr.GovernedCgroup(); gov != "" && fz != nil && fz.Target() == "" {
+			if err := fz.SetTarget(gov); err != nil {
+				log.Printf("警告: freezer 目标设置失败(冻结功能降级): %v", err)
+			}
+		}
 
 		// 受监控路径 → 内核 watch_map
 		for i, p := range cfg.Taint.WatchPaths {
@@ -269,17 +275,15 @@ func handleConnectEvent(ce *events.ConnectEvent, eng *policy.Engine,
 		log.Printf("  决策: 需要人工审批 ⟳(冻结进程, 等待用户操作)")
 	}
 
-	// 冻结发起连接的进程（尽力而为）
+	// 冻结被治理容器整体（cgroup 粒度, 覆盖 Agent 进程树;
+	// 冻结后容器内连接停摆, 不再产生新事件）
 	if fz != nil && cfg.Freezer.FreezeOnReview {
-		if err := fz.AddPID(int(ce.Pid)); err != nil {
-			if errors.Is(err, syscall.ESRCH) {
-				// 拦截已生效, 进程在冻结前退出: 常态而非故障
-				log.Printf("进程 PID=%d 已退出(连接已被拦截, 无需冻结)", ce.Pid)
-			} else {
-				log.Printf("冻结前迁移进程 PID=%d 失败: %v", ce.Pid, err)
-			}
+		if frozen, err := fz.IsFrozen(); err == nil && frozen {
+			log.Printf("  被治理容器已在冻结状态(等待审批)")
 		} else if err := fz.Freeze(); err != nil {
-			log.Printf("冻结 cgroup 失败: %v", err)
+			log.Printf("  冻结失败: %v", err)
+		} else {
+			log.Printf("  已冻结被治理容器(进程树整体暂停, 等待审批)")
 		}
 	}
 
@@ -333,7 +337,7 @@ func handleApprovalResult(res approval.Result, eng *policy.Engine,
 				log.Printf("解冻 cgroup 失败: %v", err)
 			}
 		} else {
-			log.Printf("进程 PID=%d 保持冻结(freezer.thaw_on_deny=false), 请人工处置", req.Pid)
+			log.Printf("被治理容器保持冻结(freezer.thaw_on_deny=false); 处置: docker kill <agent容器> 或解冻后排查")
 		}
 	}
 }

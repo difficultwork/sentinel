@@ -1,19 +1,35 @@
-# Sentinel 本地验证编排（Docker Desktop）
-# 用法见 docker/README.md。
+# Sentinel 本地验证编排（Windows + Docker Desktop, 双容器治理拓扑）
 #
-# privileged 是 eBPF 加载的硬性要求（CAP_BPF/CAP_SYS_ADMIN）；
-# tracefs 由 entrypoint.sh 按需挂载。
+# 用法见 docker/README.md。镜像需已存在（Dockerfile 未变）：
+#   docker build -t sentinel:latest -f docker/Dockerfile docker/
+#
+# 拓扑:
+#   sentinel-mgmt  管理面容器: 跑守护进程 + CLI。
+#     - privileged: 加载 eBPF 所需
+#     - pid host:   能读 /proc/<宿主PID>/cgroup 做 agent cgroup 发现
+#     - cgroupns host: 看见并挂载兄弟容器的 cgroup（治理 + 冻结）
+#   sentinel-agent 被治理容器: 无特权, 只跑 demo-agent。
+#     connect4/6 只挂在它的 cgroup 上, 冻结也整体冻它。
+
+name: muse
 
 services:
-  sentinel-verify:
+  sentinel:
     image: sentinel:latest
+    container_name: sentinel
     privileged: true
-    # eBPF 事件携带的是 VM 全局 PID; 共享 PID 命名空间后,
-    # freezer 迁移/kill/ps 的 PID 才能一一对应(否则 cgroup.procs 写入 ESRCH)
     pid: "host"
-    # 保持默认 cgroup namespace: /sys/fs/cgroup 指向本容器子树,
-    # connect4/6 只拦截本容器, 不影响 Docker Desktop 其他组件
+    cgroup: host
     stdin_open: true
     tty: true
     command: bash
-    # 容器内多终端: docker compose exec sentinel-verify bash
+    # CLI 与守护进程同容器(127.0.0.1): docker exec -it sentinel-mgmt bash
+
+  agent:
+    image: sentinel:latest
+    container_name: agent
+    # 无 privileged/pid/cgroupns 特殊设置——它只是被治理对象
+    stdin_open: true
+    tty: true
+    command: bash
+    # demo-agent 通过 docker exec 在此容器内运行(README 有命令)

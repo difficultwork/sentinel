@@ -25,13 +25,15 @@ import (
 
 // Loader 管理 eBPF 程序和 maps。
 type Loader struct {
-	mu     sync.Mutex
-	cfg    Config
-	coll   *ebpf.Collection
-	links  []link.Link
-	reader *ringbuf.Reader
-	loaded bool
-	logger func(string)
+	mu          sync.Mutex
+	cfg         Config
+	coll        *ebpf.Collection
+	links       []link.Link // tracepoint 链接
+	cgroupLinks []link.Link // cgroup connect 链接（可运行时重挂）
+	governed    string      // 当前治理的 cgroup 路径（attach 成功后非空）
+	reader      *ringbuf.Reader
+	loaded      bool
+	logger      func(string)
 }
 
 // New 创建加载器实例。
@@ -42,9 +44,8 @@ func New(cfg Config, logger func(string)) *Loader {
 	if cfg.PinPath == "" {
 		cfg.PinPath = "/sys/fs/bpf/sentinel"
 	}
-	if cfg.CgroupPath == "" {
-		cfg.CgroupPath = "/sys/fs/cgroup"
-	}
+	// CgroupPath 留空 = 启动不挂 cgroup 钩子，等待运行时挂载
+	// （sentinel-cli cgroup <path>），用于容器粒度治理拓扑。
 	return &Loader{cfg: cfg, logger: logger}
 }
 
@@ -93,9 +94,13 @@ func (l *Loader) Load() error {
 		l.attachTracepoints(coll)
 	}
 
-	// 6. attach cgroup connect 钩子
-	if l.cfg.EnableConnect4 || l.cfg.EnableConnect6 {
-		l.attachCgroupHooks(coll)
+	// 6. attach cgroup connect 钩子。配置了 cgroup_path 才启动即挂载；
+	//    留空则等待运行时挂载（sentinel-cli cgroup <path>），用于
+	//    "sentinel 与被治理容器分离"的双容器拓扑。
+	if l.cfg.CgroupPath != "" {
+		l.attachCgroupHooks(l.cfg.CgroupPath)
+	} else {
+		l.logger("[loader] cgroup 钩子待挂载: 用 sentinel-cli cgroup <path> 指定被治理容器")
 	}
 
 	// 7. ring buffer reader
@@ -143,8 +148,9 @@ func (l *Loader) attachTracepoints(coll *ebpf.Collection) {
 	}
 }
 
-// attachCgroupHooks attach cgroup sockaddr 程序。
-func (l *Loader) attachCgroupHooks(coll *ebpf.Collection) {
+// attachCgroupHooks attach cgroup sockaddr 程序到指定 cgroup（调用方持锁）。
+// 挂载成功后把该路径记为治理目标。
+func (l *Loader) attachCgroupHooks(path string) {
 	cgroupProgs := []struct {
 		progName string
 		attach   ebpf.AttachType
@@ -154,27 +160,78 @@ func (l *Loader) attachCgroupHooks(coll *ebpf.Collection) {
 		{"sentinel_connect6", ebpf.AttachCGroupInet6Connect, l.cfg.EnableConnect6},
 	}
 
+	attached := 0
 	for _, cg := range cgroupProgs {
 		if !cg.enabled {
 			continue
 		}
-		prog, ok := coll.Programs[cg.progName]
+		prog, ok := l.coll.Programs[cg.progName]
 		if !ok {
 			l.logger(fmt.Sprintf("[loader] 未找到程序: %s", cg.progName))
 			continue
 		}
 		lk, err := link.AttachCgroup(link.CgroupOptions{
-			Path:    l.cfg.CgroupPath,
+			Path:    path,
 			Attach:  cg.attach,
 			Program: prog,
 		})
 		if err != nil {
-			l.logger(fmt.Sprintf("[loader] attach cgroup 失败: %s → %s: %v", cg.progName, l.cfg.CgroupPath, err))
+			l.logger(fmt.Sprintf("[loader] attach cgroup 失败: %s → %s: %v", cg.progName, path, err))
 			continue
 		}
-		l.links = append(l.links, lk)
-		l.logger(fmt.Sprintf("[loader] cgroup hook 已 attach: %s → %s", cg.progName, l.cfg.CgroupPath))
+		l.cgroupLinks = append(l.cgroupLinks, lk)
+		attached++
+		l.logger(fmt.Sprintf("[loader] cgroup hook 已 attach: %s → %s", cg.progName, path))
 	}
+	if attached > 0 {
+		l.governed = path
+	}
+}
+
+// AttachCgroup 运行时挂载 cgroup connect 钩子并设为治理目标
+// （sentinel-cli cgroup <path> 命令的后端）。
+// 重复调用会先卸载旧钩子再挂载新目标。
+func (l *Loader) AttachCgroup(path string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if !l.loaded || l.coll == nil {
+		return fmt.Errorf("eBPF 程序未加载")
+	}
+	if path == "" {
+		return fmt.Errorf("cgroup 路径为空")
+	}
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("cgroup 路径必须是绝对路径: %s", path)
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("cgroup 目录不存在(需 cgroupns=host 才能看见兄弟容器): %s: %w", path, err)
+	}
+
+	l.closeCgroupLinksLocked()
+	l.attachCgroupHooks(path)
+	if l.governed != path {
+		return fmt.Errorf("cgroup 钩子挂载失败(详见守护进程日志)")
+	}
+	return nil
+}
+
+// GovernedCgroup 返回当前治理的 cgroup 路径（未挂载为空串）。
+func (l *Loader) GovernedCgroup() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.governed
+}
+
+// closeCgroupLinksLocked 卸载全部 cgroup 钩子并清空治理目标（调用方持锁）。
+func (l *Loader) closeCgroupLinksLocked() {
+	for i, lk := range l.cgroupLinks {
+		if err := lk.Close(); err != nil {
+			l.logger(fmt.Sprintf("[loader] detach cgroup link %d 失败: %v", i, err))
+		}
+	}
+	l.cgroupLinks = nil
+	l.governed = ""
 }
 
 // ReadEvents 从 ring buffer 读取事件并分发到处理器，直到 reader 关闭。
@@ -315,6 +372,7 @@ func (l *Loader) Close() error {
 		}
 	}
 	l.links = nil
+	l.closeCgroupLinksLocked()
 	if l.coll != nil {
 		l.coll.Close()
 		l.coll = nil
@@ -346,6 +404,10 @@ func (l *Loader) Stats() string {
 	if !l.loaded || l.coll == nil {
 		return "未加载"
 	}
-	return fmt.Sprintf("已加载 | maps=%d programs=%d links=%d pin=%s",
-		len(l.coll.Maps), len(l.coll.Programs), len(l.links), l.cfg.PinPath)
+	gov := ""
+	if l.governed != "" {
+		gov = " governed=" + l.governed
+	}
+	return fmt.Sprintf("已加载 | maps=%d programs=%d links=%d%s pin=%s",
+		len(l.coll.Maps), len(l.coll.Programs), len(l.links)+len(l.cgroupLinks), gov, l.cfg.PinPath)
 }

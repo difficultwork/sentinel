@@ -18,6 +18,8 @@
 //   POST /api/taint/{pid}           手动标记进程污点
 //   POST /api/untaint/{pid}         手动清除进程污点
 //   GET  /api/injections            凭证注入审计日志
+//   GET  /api/cgroup                当前治理的 cgroup 与 freezer 状态
+//   POST /api/cgroup/attach?path=   挂载被治理 cgroup（CLI cgroup 命令后端）
 package api
 
 import (
@@ -33,6 +35,7 @@ import (
 
 	"github.com/sentinel-sec/sentinel/internal/approval"
 	"github.com/sentinel-sec/sentinel/internal/authd"
+	"github.com/sentinel-sec/sentinel/internal/freezer"
 	"github.com/sentinel-sec/sentinel/internal/loader"
 	"github.com/sentinel-sec/sentinel/internal/policy"
 )
@@ -46,9 +49,10 @@ type Deps struct {
 	Manager    *approval.Manager
 	Engine     *policy.Engine
 	Authd      *authd.Proxy
-	Loader     *loader.Loader // 可为 nil（dry-run）；未加载时相关端点报错
-	Token      string         // API 令牌（X-Sentinel-Token）
-	Extra      StatusSource   // 可选的附加状态
+	Loader     *loader.Loader    // 可为 nil（dry-run）；未加载时相关端点报错
+	Freezer    *freezer.Freezer  // 可为 nil（freezer.enabled=false / dry-run）
+	Token      string            // API 令牌（X-Sentinel-Token）
+	Extra      StatusSource      // 可选的附加状态
 	Logger     func(string)
 }
 
@@ -86,6 +90,8 @@ func (s *Server) Start() error {
 	apiMux.HandleFunc("/api/taint/", s.handleTaint(true))
 	apiMux.HandleFunc("/api/untaint/", s.handleTaint(false))
 	apiMux.HandleFunc("/api/injections", s.handleInjections)
+	apiMux.HandleFunc("/api/cgroup", s.handleCgroupGet)
+	apiMux.HandleFunc("/api/cgroup/attach", s.handleCgroupAttach)
 
 	mux.Handle("/api/", s.authMiddleware(apiMux))
 
@@ -260,6 +266,54 @@ func (s *Server) handleTaint(dirty bool) http.HandlerFunc {
 
 func (s *Server) handleInjections(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, s.deps.Authd.GetInjectionLog())
+}
+
+// handleCgroupGet 返回当前治理的 cgroup 与 freezer 状态。
+func (s *Server) handleCgroupGet(w http.ResponseWriter, r *http.Request) {
+	resp := map[string]any{"governed": "", "freezer": "未启用"}
+	if s.deps.Loader != nil {
+		resp["governed"] = s.deps.Loader.GovernedCgroup()
+	}
+	if s.deps.Freezer != nil {
+		resp["freezer"] = s.deps.Freezer.Stats()
+	}
+	writeJSON(w, resp)
+}
+
+// handleCgroupAttach 挂载被治理 cgroup（sentinel-cli cgroup <path> 后端）：
+// attach cgroup connect 钩子 + 设为 freezer 冻结目标。
+func (s *Server) handleCgroupAttach(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		http.Error(w, "缺少 path 参数(绝对路径, 如 /sys/fs/cgroup/docker/<id>)", http.StatusBadRequest)
+		return
+	}
+	if s.deps.Loader == nil || !s.deps.Loader.IsLoaded() {
+		http.Error(w, "eBPF 未加载, 无法挂载 cgroup", http.StatusServiceUnavailable)
+		return
+	}
+	if err := s.deps.Loader.AttachCgroup(path); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if s.deps.Freezer != nil {
+		if err := s.deps.Freezer.SetTarget(path); err != nil {
+			// attach 已成功; freezer 目标失败仅降级冻结, 不影响拦截
+			s.logger(fmt.Sprintf("[api] freezer 目标设置失败(冻结功能降级): %v", err))
+		}
+	} else {
+		s.logger("[api] 警告: freezer 未启用(freezer.enabled=false), 仅拦截, 冻结不可用")
+	}
+	s.logger(fmt.Sprintf("[api] 治理目标已挂载: %s", path))
+	fzState := "未启用"
+	if s.deps.Freezer != nil {
+		fzState = s.deps.Freezer.Stats()
+	}
+	writeJSON(w, map[string]any{"status": "ok", "governed": path, "freezer": fzState})
 }
 
 // ---- 鉴权中间件 ----

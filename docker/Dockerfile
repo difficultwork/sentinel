@@ -24,3 +24,5 @@ COPY --from=builder /app/bin/sentinel-cli /usr/local/bin/sentinel-cli
 COPY --from=builder /app/bin/demo-agent /usr/local/bin/demo-agent
 
 COPY ./docker/sentinel-verify.yaml /etc/sentinel/sentinel-verify.yaml
+COPY ./docker/attach-agent.sh /usr/local/bin/attach-agent.sh
+RUN chmod +x /usr/local/bin/attach-agent.sh

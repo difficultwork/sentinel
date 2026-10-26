@@ -29,9 +29,6 @@ func New(cfg Config, logger func(string)) *Loader {
 	if cfg.PinPath == "" {
 		cfg.PinPath = "/sys/fs/bpf/sentinel"
 	}
-	if cfg.CgroupPath == "" {
-		cfg.CgroupPath = "/sys/fs/cgroup"
-	}
 	l := &Loader{cfg: cfg, logger: logger}
 	l.logger(fmt.Sprintf("[loader] 当前平台 %s 不支持 eBPF, 完整模式受限(--dry-run 可用)", runtime.GOOS))
 	return l
@@ -71,6 +68,16 @@ func (l *Loader) SetTaint(pid uint32, dirty bool) error {
 // SetWatchPath 在非 Linux 平台返回受限错误。
 func (l *Loader) SetWatchPath(idx int, prefix string) error {
 	return fmt.Errorf("%w(当前平台 %s)", ErrUnsupportedPlatform, runtime.GOOS)
+}
+
+// AttachCgroup 在非 Linux 平台返回受限错误。
+func (l *Loader) AttachCgroup(path string) error {
+	return fmt.Errorf("%w(当前平台 %s)", ErrUnsupportedPlatform, runtime.GOOS)
+}
+
+// GovernedCgroup 在非 Linux 平台恒为空串。
+func (l *Loader) GovernedCgroup() string {
+	return ""
 }
 
 // Close 在非 Linux 平台是无操作。
