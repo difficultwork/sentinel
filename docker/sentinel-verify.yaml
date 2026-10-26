@@ -1,11 +1,10 @@
 # Sentinel 双容器验证配置（管理面容器内使用）
 # 与 configs/sentinel.yaml 的差异：
-#   1. ebpf.cgroup_path 留空——启动不挂 cgroup 钩子，由
-#      sentinel-cli cgroup <path> 运行时挂载到 agent 容器
-#   2. allow 加白 CLI->API 回环与 Docker 内置 DNS（deny-by-default
+#   1. allow 加白 CLI->API 回环与 Docker 内置 DNS（deny-by-default
 #      会拦掉容器内一切未知目标连接）
-#   3. watch_paths 对准 demo-agent 实际读取的 /tmp 敏感文件
-#   4. 审批超时放宽到 10 分钟，便于交互演示
+#   2. watch_paths 对准 demo-agent 实际读取的 /tmp 敏感文件
+#   3. 审批超时放宽到 10 分钟，便于交互演示
+# 治理 cgroup 一律由 sentinel-cli cgroup <path> 运行时挂载（无配置项）
 
 approval:
   listen_addr: "127.0.0.1:7654"
@@ -15,7 +14,6 @@ approval:
 
 ebpf:
   pin_path: "/sys/fs/bpf/sentinel"
-  cgroup_path: ""            # 留空 = sentinel-cli cgroup <path> 运行时挂载
   enable_connect4: true
   enable_connect6: true
   enable_taint_tracking: true

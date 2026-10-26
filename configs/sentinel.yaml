@@ -10,9 +10,10 @@ approval:
   token_path: "/run/sentinel/api-token"  # API 令牌文件（0600，CLI 自动读取）
 
 # eBPF 配置（字节码已嵌入二进制，此处无需指定 .o 路径）
+# 注意: 治理 cgroup 不在配置中指定——启动后用 sentinel-cli cgroup <path>
+# 挂载(attach connect 钩子 + 设为 freezer 冻结目标), 支持运行期切换
 ebpf:
   pin_path: "/sys/fs/bpf/sentinel"   # BPF map pin 目录
-  cgroup_path: "/sys/fs/cgroup"      # connect 钩子 attach 的 cgroup 根
   enable_connect4: true
   enable_connect6: true
   enable_taint_tracking: true
@@ -51,11 +52,10 @@ taint:
     - ".pem"
     - ".secret"
 
-# cgroup freezer（优先 v2 unified，回退 v1 freezer 控制器）
+# cgroup freezer（容器粒度: 冻结 sentinel-cli cgroup 挂载的整个 cgroup 子树）
 freezer:
   enabled: true
-  cgroup_name: "sentinel_runtime"
-  freeze_on_review: true    # 需要审批时冻结进程
+  freeze_on_review: true    # 需要审批时冻结被治理容器
   thaw_on_approve: true     # 审批通过后解冻
   thaw_on_deny: false       # 审批拒绝后保持冻结，等待人工处置
 

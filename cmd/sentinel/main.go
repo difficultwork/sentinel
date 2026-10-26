@@ -86,17 +86,17 @@ func main() {
 		}
 	}
 
-	// 4. eBPF 加载器（字节码已嵌入）
+	// 4. eBPF 加载器（字节码已嵌入; cgroup 钩子由 sentinel-cli cgroup
+	//    <path> 运行时挂载）
 	ldr := loader.New(loader.Config{
 		PinPath:             cfg.EBPF.PinPath,
-		CgroupPath:          cfg.EBPF.CgroupPath,
 		EnableConnect4:      cfg.EBPF.EnableConnect4,
 		EnableConnect6:      cfg.EBPF.EnableConnect6,
 		EnableTaintTracking: cfg.EBPF.EnableTaintTracking,
 	}, logger)
 
-	// 5. cgroup freezer（容器粒度治理；目标由 sentinel-cli cgroup <path>
-	//    运行时指定，或跟随配置的 cgroup_path）
+	// 5. cgroup freezer（容器粒度治理；目标随 sentinel-cli cgroup <path>
+	//    挂载动作一并设置）
 	var fz *freezer.Freezer
 	if cfg.Freezer.Enabled && !*dryRun {
 		fz = freezer.New(logger)
@@ -167,14 +167,6 @@ func main() {
 		log.Printf("eBPF 状态: %s", ldr.Stats())
 
 		eng.SetMapSync(ldr)
-
-		// 配置式挂载(cgroup_path 非空)时, 同步 freezer 冻结目标;
-		// 留空则等待 sentinel-cli cgroup <path>(attach 时由 API 同步)
-		if gov := ldr.GovernedCgroup(); gov != "" && fz != nil && fz.Target() == "" {
-			if err := fz.SetTarget(gov); err != nil {
-				log.Printf("警告: freezer 目标设置失败(冻结功能降级): %v", err)
-			}
-		}
 
 		// 受监控路径 → 内核 watch_map
 		for i, p := range cfg.Taint.WatchPaths {

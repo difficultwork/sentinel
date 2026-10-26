@@ -44,8 +44,6 @@ func New(cfg Config, logger func(string)) *Loader {
 	if cfg.PinPath == "" {
 		cfg.PinPath = "/sys/fs/bpf/sentinel"
 	}
-	// CgroupPath 留空 = 启动不挂 cgroup 钩子，等待运行时挂载
-	// （sentinel-cli cgroup <path>），用于容器粒度治理拓扑。
 	return &Loader{cfg: cfg, logger: logger}
 }
 
@@ -94,14 +92,10 @@ func (l *Loader) Load() error {
 		l.attachTracepoints(coll)
 	}
 
-	// 6. attach cgroup connect 钩子。配置了 cgroup_path 才启动即挂载；
-	//    留空则等待运行时挂载（sentinel-cli cgroup <path>），用于
-	//    "sentinel 与被治理容器分离"的双容器拓扑。
-	if l.cfg.CgroupPath != "" {
-		l.attachCgroupHooks(l.cfg.CgroupPath)
-	} else {
-		l.logger("[loader] cgroup 钩子待挂载: 用 sentinel-cli cgroup <path> 指定被治理容器")
-	}
+	// 6. cgroup connect 钩子不做启动挂载：治理目标由 sentinel-cli
+	//    cgroup <path> 运行时指定（AttachCgroup），支持"管理面与被治理
+	//    容器分离"的拓扑与运行期切换目标。
+	l.logger("[loader] cgroup 钩子待挂载: 用 sentinel-cli cgroup <path> 指定被治理容器")
 
 	// 7. ring buffer reader
 	eventsMap, ok := coll.Maps["events"]

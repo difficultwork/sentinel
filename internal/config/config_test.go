@@ -19,7 +19,6 @@ approval:
 
 ebpf:
   pin_path: "/sys/fs/bpf/x"
-  cgroup_path: "/sys/fs/cgroup/y"
   enable_connect4: true
   enable_connect6: false
   enable_taint_tracking: true
@@ -45,7 +44,6 @@ taint:
 
 freezer:
   enabled: true
-  cgroup_name: "cell1"
   freeze_on_review: true
   thaw_on_approve: false
   thaw_on_deny: true

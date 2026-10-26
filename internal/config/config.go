@@ -30,10 +30,9 @@ type Config struct {
 	}
 
 	EBPF struct {
-		PinPath            string // BPF map pin 目录
-		CgroupPath         string // cgroup attach 根路径
-		EnableConnect4     bool
-		EnableConnect6     bool
+		PinPath             string // BPF map pin 目录
+		EnableConnect4      bool
+		EnableConnect6      bool
 		EnableTaintTracking bool
 	}
 
@@ -51,7 +50,6 @@ type Config struct {
 
 	Freezer struct {
 		Enabled        bool
-		CgroupName     string
 		FreezeOnReview bool
 		ThawOnApprove  bool
 		ThawOnDeny     bool
@@ -85,8 +83,7 @@ func Default() Config {
 	c.Approval.TokenPath = "/run/sentinel/api-token"
 
 	c.EBPF.PinPath = "/sys/fs/bpf/sentinel"
-	// CgroupPath 默认留空: 启动不挂 cgroup 钩子, 由 sentinel-cli
-	// cgroup <path> 运行时挂载(容器粒度治理拓扑)
+	// 治理 cgroup 不在配置中指定: 由 sentinel-cli cgroup <path> 运行时挂载
 	c.EBPF.EnableConnect4 = true
 	c.EBPF.EnableConnect6 = true
 	c.EBPF.EnableTaintTracking = true
@@ -103,7 +100,6 @@ func Default() Config {
 	}
 
 	c.Freezer.Enabled = true
-	c.Freezer.CgroupName = "sentinel_runtime"
 	c.Freezer.FreezeOnReview = true
 	c.Freezer.ThawOnApprove = true
 	c.Freezer.ThawOnDeny = false
@@ -149,7 +145,6 @@ func decode(tree map[string]any, c *Config) error {
 	}
 	if m := getMap(tree, "ebpf"); m != nil {
 		c.EBPF.PinPath = getString(m, "pin_path", c.EBPF.PinPath)
-		c.EBPF.CgroupPath = getString(m, "cgroup_path", c.EBPF.CgroupPath)
 		c.EBPF.EnableConnect4 = getBool(m, "enable_connect4", c.EBPF.EnableConnect4)
 		c.EBPF.EnableConnect6 = getBool(m, "enable_connect6", c.EBPF.EnableConnect6)
 		c.EBPF.EnableTaintTracking = getBool(m, "enable_taint_tracking", c.EBPF.EnableTaintTracking)
@@ -166,7 +161,6 @@ func decode(tree map[string]any, c *Config) error {
 	}
 	if m := getMap(tree, "freezer"); m != nil {
 		c.Freezer.Enabled = getBool(m, "enabled", c.Freezer.Enabled)
-		c.Freezer.CgroupName = getString(m, "cgroup_name", c.Freezer.CgroupName)
 		c.Freezer.FreezeOnReview = getBool(m, "freeze_on_review", c.Freezer.FreezeOnReview)
 		c.Freezer.ThawOnApprove = getBool(m, "thaw_on_approve", c.Freezer.ThawOnApprove)
 		c.Freezer.ThawOnDeny = getBool(m, "thaw_on_deny", c.Freezer.ThawOnDeny)

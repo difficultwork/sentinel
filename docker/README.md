@@ -22,7 +22,7 @@ Docker Desktop VM (WSL2 内核 5.15+, cgroup v2)
 | `Dockerfile` | 工具链镜像（clang 18 + Go 1.25 + bpftool），构建一次即可 |
 | `entrypoint.sh` | 自动挂 bpffs/tracefs + 环境自检 |
 | `compose.yaml` | 双容器编排（纯 image 引用，无 build 段） |
-| `sentinel-verify.yaml` | 验证配置（cgroup_path 留空等） |
+| `sentinel-verify.yaml` | 验证配置（加白回环/DNS、审批超时 10m；治理 cgroup 由 CLI 挂载） |
 | `attach-agent.sh` | 在 mgmt 容器内发现 agent cgroup 并挂载 |
 
 ## 快速开始
