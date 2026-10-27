@@ -29,8 +29,7 @@ policy:
     - "1.2.3.4:80"
     - "[2001:db8::1]:443"          # 文档示例段，演示 v6 拒绝条目
 
-  temp_allow_ttl: "5m"      # 审批通过后的临时放行 TTL
-  cleanup_interval: "30s"   # 过期条目清理周期
+  temp_allow_ttl: "5m"      # 审批通过后的临时放行 TTL(过期由内部 30s 周期回收)
 
 # 污点追踪
 taint:

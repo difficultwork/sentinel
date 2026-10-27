@@ -37,6 +37,16 @@ import (
 	"github.com/sentinel-sec/sentinel/internal/policy"
 )
 
+// tempAllowCleanupInterval 是临时放行(temp_allow)过期回收的扫描周期。
+//
+// 为什么是固定常量而非配置项: 内核 temp_allow_map 的 value 只是放行标志,
+// 内核不知道过期时间, 过期撤销完全由用户态的周期扫描完成(CleanExpiredTemp
+// 同时删除用户态与内核 map 条目)。周期本身没有可调语义——任何正值都正确,
+// 只决定"过期后最多多拖一个周期被收回"(即 temp_allow 实际有效期 =
+// temp_allow_ttl + 最多一个本周期)。取 30s: 回收及时, 扫描开销可忽略
+// (单次遍历一个小 map), 且避免逐条定时器方案在大量审批时产生同样多的 timer。
+const tempAllowCleanupInterval = 30 * time.Second
+
 func main() {
 	configPath := flag.String("config", "configs/sentinel.yaml", "配置文件路径")
 	dryRun := flag.Bool("dry-run", false, "模拟模式: 不加载 eBPF 程序, 仅测试策略引擎与审批通道")
@@ -141,9 +151,9 @@ func main() {
 		}
 	}()
 
-	// 9. 过期临时放行清理
+	// 9. 过期临时放行清理(唯一撤销机制, 见 tempAllowCleanupInterval 注释)
 	go func() {
-		ticker := time.NewTicker(cfg.Policy.CleanupInterval)
+		ticker := time.NewTicker(tempAllowCleanupInterval)
 		defer ticker.Stop()
 		for range ticker.C {
 			eng.CleanExpiredTemp()

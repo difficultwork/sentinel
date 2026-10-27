@@ -35,10 +35,9 @@ type Config struct {
 	}
 
 	Policy struct {
-		Allow            []string // 初始允许列表，"ip:port"
-		Deny             []string // 初始拒绝列表，"ip:port"
-		TempAllowTTL     time.Duration
-		CleanupInterval  time.Duration
+		Allow        []string // 初始允许列表，"ip:port"
+		Deny         []string // 初始拒绝列表，"ip:port"
+		TempAllowTTL time.Duration
 	}
 
 	Taint struct {
@@ -84,7 +83,8 @@ func Default() Config {
 	c.EBPF.EnableTaintTracking = true
 
 	c.Policy.TempAllowTTL = 5 * time.Minute
-	c.Policy.CleanupInterval = 30 * time.Second
+	// 过期清理周期是内部实现细节, 固定 30s(见 cmd/sentinel 的
+	// tempAllowCleanupInterval), 不作为配置项暴露
 
 	c.Taint.WatchPaths = []string{
 		"/home/user/Mail",
@@ -143,7 +143,6 @@ func decode(tree map[string]any, c *Config) error {
 		c.Policy.Allow = getStringList(m, "allow", c.Policy.Allow)
 		c.Policy.Deny = getStringList(m, "deny", c.Policy.Deny)
 		c.Policy.TempAllowTTL = getDuration(m, "temp_allow_ttl", c.Policy.TempAllowTTL)
-		c.Policy.CleanupInterval = getDuration(m, "cleanup_interval", c.Policy.CleanupInterval)
 	}
 	if m := getMap(tree, "taint"); m != nil {
 		c.Taint.WatchPaths = getStringList(m, "watch_paths", c.Taint.WatchPaths)
@@ -190,9 +189,6 @@ func (c *Config) Validate() error {
 	}
 	if c.Policy.TempAllowTTL <= 0 {
 		return fmt.Errorf("policy.temp_allow_ttl 必须为正")
-	}
-	if c.Policy.CleanupInterval <= 0 {
-		return fmt.Errorf("policy.cleanup_interval 必须为正")
 	}
 	if n := len(c.Taint.WatchPaths); n > MaxWatchPaths {
 		return fmt.Errorf("taint.watch_paths 最多 %d 条(内核 MAX_WATCH_PATHS 限制), 当前 %d 条",

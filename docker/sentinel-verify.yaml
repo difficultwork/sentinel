@@ -28,7 +28,6 @@ policy:
     - "1.2.3.4:80"
     - "[2001:db8::1]:443"   # 文档示例段, 演示 v6 拒绝
   temp_allow_ttl: "5m"
-  cleanup_interval: "30s"
 
 taint:
   watch_paths:

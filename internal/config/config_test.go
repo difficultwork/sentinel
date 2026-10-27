@@ -32,7 +32,7 @@ policy:
     - "1.2.3.4:80"
     - "[2001:db8::bad]:443"
   temp_allow_ttl: "2m"
-  cleanup_interval: "15s"
+  cleanup_interval: "15s"         # 已移除的键: 应被解析器忽略而非报错(旧配置兼容)
 
 taint:
   watch_paths:
