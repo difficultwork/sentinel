@@ -41,7 +41,9 @@ make toolchain && make deps && make build && make test
 
 # 3) 启动守护进程(后台)
 ./bin/sentinel --config docker/sentinel-verify.yaml &
-# 预期: collection 已加载 + tracepoint×3 + ringbuf; cgroup 钩子待挂载提示
+# 预期: collection 已加载(programs=6) + tracepoint×2-3 + ringbuf;
+#       6.18-WSL2 内核上 fork 会显示 "已改用 fexit/kernel_clone 传播兜底"(正常降级);
+#       cgroup 钩子待挂载提示
 
 # 4) 挂载治理目标(Windows 另开终端拿宿主 PID, 再回 mgmt 容器执行)
 docker inspect -f '{{.State.Pid}}' sentinel-agent     # 例如 7231
@@ -99,7 +101,9 @@ docker stats --no-stream sentinel-agent            # CPU 停在 0
 | 症状 | 原因与处理 |
 |---|---|
 | `cgroup 目录不存在` (attach 时) | mgmt 容器没带 `cgroupns: host`; 或 State.Pid 过期(容器重建过), 重新 inspect |
-| tracepoint attach 失败 | tracefs 未挂载(entrypoint 自动; 手工: `mount -t tracefs none /sys/kernel/tracing`) |
+| tracepoint attach 失败 | tracefs 未挂载(entrypoint 自动; 手工: `mount -t tracefs none /sys/kernel/tracing`)。若失败的是 `sched_process_fork` 且日志带 "两条 perf 通道均被拒...已改用 fexit/kernel_clone 传播兜底" —— 这是 6.18-WSL2 内核已知限制的**正常降级**, 传播功能由 fexit 承接, 无需处理 |
+| 启动日志含 "污点特性已停用: ... 布局校验失败" | 运行内核的 sys_enter_openat 布局与 LP64 预期不符(多为 32 位/非常规内核); 日志会给出实际 offset。其余功能(拦截/审批/冻结)不受影响 |
+| openat 已挂载但无 `[taint] 标记污染` | 旧二进制(重新 `make build` + 重启); 或测试发生在旧 daemon 生命周期内。确认手段: `bpftool prog show name sentinel_taint_openat` 看 run_cnt 是否上涨 |
 | attach-agent.sh 报 /proc/PID 不存在 | mgmt 未用 `pid: host`; 或 agent 容器未运行 |
 | 场景 3 未冻结且无审批卡 | 目标未挂载(第 4 步漏了)——`sentinel-cli cgroup` 查看 governed 是否为空 |
 | `docker stop` 冻结容器无响应 | SIGTERM 对冻结进程挂起; 用 `docker kill` 或先 approve/deny 解冻 |

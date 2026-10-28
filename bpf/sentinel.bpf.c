@@ -472,6 +472,54 @@ int sentinel_taint_fork(struct sched_process_fork_ctx *ctx)
 }
 
 /*
+ * fexit/kernel_clone: 污点传播的兜底通道。
+ *
+ * 动机: 实测 6.18-microsoft-standard-WSL2 内核对 sched_process_fork 的
+ * "perf 事件绑 BPF 程序"(bpf_link_create 与 IOC_SET_BPF 两条路径)一律
+ * 返回 EACCES, 而 perf_event_open 本身成功、其他 tracepoint 一切正常——
+ * 属于该内核对特定事件的限制。fexit 走 BPF trampoline, 与 perf 子系统无关。
+ *
+ * 语义: kernel_clone 返回子进程 tgid(失败为负); 父取 current tgid。
+ * fork/vfork/clone/clone3 全部经由 kernel_clone(5.10+ 起存在, 覆盖 5.15 地板)。
+ * fexit ctx 为 "实参 + 返回值" 的 u64 数组, 按偏移直读, 无需 CO-RE。
+ */
+struct fexit_kernel_clone_ctx {
+    __u64 args; /* 参数 1: struct kernel_clone_args *(不读) */
+    __u64 ret;  /* 返回值: 子 tgid, 失败为负 */
+};
+
+SEC("fexit/kernel_clone")
+int sentinel_taint_fork_clone(struct fexit_kernel_clone_ctx *ctx)
+{
+    __s64 ret = (__s64)ctx->ret;
+    if (ret <= 0)
+        return 0;
+
+    __u32 parent_tgid = bpf_get_current_pid_tgid() >> 32;
+
+    __u32 *parent_taint = bpf_map_lookup_elem(&taint_map, &parent_tgid);
+    if (!parent_taint || *parent_taint != TAINT_DIRTY)
+        return 0;
+
+    __u32 child_tgid = (__u32)ret;
+    __u32 dirty = TAINT_DIRTY;
+    bpf_map_update_elem(&taint_map, &child_tgid, &dirty, BPF_ANY);
+
+    struct taint_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+    if (e) {
+        e->type = EVENT_TAINT_PROPAGATE;
+        e->pid = child_tgid;
+        e->parent_pid = parent_tgid;
+        e->uid = bpf_get_current_uid_gid() >> 32;
+        e->taint = TAINT_DIRTY;
+        bpf_get_current_comm(&e->comm, sizeof(e->comm));
+        __builtin_memcpy(e->parent_comm, e->comm, sizeof(e->parent_comm));
+        bpf_ringbuf_submit(e, 0);
+    }
+    return 0;
+}
+
+/*
  * 进程退出清理：
  *   - leader 退出（pid == tgid）→ 清除整个进程的 tgid 污点键；
  *   - 普通线程退出 → 清除自身 tid 键（fork 传播可能写入过）。

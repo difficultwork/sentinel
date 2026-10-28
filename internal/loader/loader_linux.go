@@ -10,32 +10,44 @@ package loader
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"sync"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
+	"golang.org/x/sys/unix"
 
 	"github.com/sentinel-sec/sentinel/internal/events"
 )
 
+// legacyPerfFd 记录旧通道(perf_event_open + IOC_SET_BPF)挂载的 perf 事件 fd。
+type legacyPerfFd struct {
+	fd    int
+	event string
+}
+
 // Loader 管理 eBPF 程序和 maps。
 type Loader struct {
-	mu          sync.Mutex
-	cfg         Config
-	coll        *ebpf.Collection
-	links       []link.Link // tracepoint 链接
-	cgroupLinks []link.Link // cgroup connect 链接（可运行时重挂）
-	governed    string      // 当前治理的 cgroup 路径（attach 成功后非空）
-	reader      *ringbuf.Reader
-	loaded      bool
-	logger      func(string)
+	mu             sync.Mutex
+	cfg            Config
+	coll           *ebpf.Collection
+	links          []link.Link   // tracepoint 链接(bpf_link 通道)
+	legacyPerfFds  []legacyPerfFd // tracepoint 挂载(旧通道, bpf_link 被拒时降级)
+	cgroupLinks    []link.Link   // cgroup connect 链接（可运行时重挂）
+	governed       string        // 当前治理的 cgroup 路径（attach 成功后非空）
+	reader         *ringbuf.Reader
+	loaded         bool
+	logger         func(string)
 }
 
 // New 创建加载器实例。
@@ -70,6 +82,16 @@ func (l *Loader) Load() error {
 	// 3. 加载 collection（map 不 pin: 生命周期与进程一致,
 	//    内核侧调试用 bpftool map ... name <map名> 即可）
 	coll, err := ebpf.NewCollection(spec)
+	if err != nil && l.cfg.EnableTaintTracking {
+		// fexit/kernel_clone 兜底程序需要内核 BTF 解析符号; 在无 BTF 的
+		// 内核上会导致整个 collection 拒载。删除该程序重试一次, 使 BTF
+		// 保持可选(此时仅失去 fork 传播的兜底通道, 主链路不受影响)。
+		delete(spec.Programs, "sentinel_taint_fork_clone")
+		coll, err = ebpf.NewCollection(spec)
+		if err == nil {
+			l.logger("[loader] 提示: 内核无 BTF, 已剔除 fexit/kernel_clone 兜底程序后加载")
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("加载 BPF collection 失败(需要 root/CAP_BPF, 内核 >= 5.15): %w", err)
 	}
@@ -130,7 +152,32 @@ func (l *Loader) attachTracepoints(coll *ebpf.Collection) {
 		}
 		lk, err := link.Tracepoint(tp.category, tp.event, prog, nil)
 		if err != nil {
-			l.logger(fmt.Sprintf("[loader] attach tracepoint 失败: %s/%s: %v", tp.category, tp.event, err))
+			// 降级: bpf_link 通道被拒(如 6.18-microsoft-standard-WSL2 对
+			// sched_process_fork 返回 EACCES)时, 退回 perf_event_open +
+			// IOC_SET_BPF 旧通道, 功能等价。
+			fd, lerr := l.attachTracepointLegacy(tp.category, tp.event, prog)
+			if lerr != nil {
+				// 三级兜底(仅 fork): fexit/kernel_clone, 走 BPF trampoline,
+				// 与 perf 子系统无关, 见 BPF 源码注释。
+				if tp.event == "sched_process_fork" {
+					if p, ok := coll.Programs["sentinel_taint_fork_clone"]; ok {
+						if lk2, err2 := link.AttachTracing(link.TracingOptions{Program: p}); err2 == nil {
+							l.links = append(l.links, lk2)
+							l.logger(fmt.Sprintf(
+								"[loader] tracepoint %s/%s 两条 perf 通道均被拒(%v), 已改用 fexit/kernel_clone 传播兜底",
+								tp.category, tp.event, err))
+							continue
+						} else {
+							l.logger(fmt.Sprintf("[loader] fexit/kernel_clone 兜底失败: %v", err2))
+						}
+					}
+				}
+				l.logger(fmt.Sprintf("[loader] attach tracepoint 失败: %s/%s: %v (旧通道也失败: %v)",
+					tp.category, tp.event, err, lerr))
+				continue
+			}
+			l.legacyPerfFds = append(l.legacyPerfFds, legacyPerfFd{fd: fd, event: tp.event})
+			l.logger(fmt.Sprintf("[loader] tracepoint 已 attach(旧通道): %s/%s", tp.category, tp.event))
 			continue
 		}
 		l.links = append(l.links, lk)
@@ -194,6 +241,66 @@ func verifySysEnterOpenatLayout() error {
 		}
 	}
 	return nil
+}
+
+// readTracepointID 从 tracefs 读取 tracepoint 的事件 ID。
+func readTracepointID(system, name string) (uint32, error) {
+	for _, dir := range tracefsPathCandidates {
+		b, err := os.ReadFile(filepath.Join(dir, "events", system, name, "id"))
+		if err == nil {
+			id, perr := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 32)
+			if perr != nil {
+				return 0, fmt.Errorf("tracepoint %s/%s id 解析失败: %w", system, name, perr)
+			}
+			return uint32(id), nil
+		}
+	}
+	return 0, fmt.Errorf("无法读取 tracepoint %s/%s 的 id(需挂载 tracefs)", system, name)
+}
+
+// attachTracepointLegacy 以旧通道挂载 tracepoint:
+// perf_event_open(disabled) → PERF_EVENT_IOC_SET_BPF → PERF_EVENT_IOC_ENABLE。
+// 这是 bpf_link_create(5.15+) 普及前 libbpf 的标准路径, 功能等价,
+// fd 生命周期随进程。动机: 某些内核(实测 6.18-microsoft-standard-WSL2)
+// 对个别 tracepoint(如 sched_process_fork)的 bpf_link_create 返回 EACCES,
+// 同批其他事件正常, 旧通道不受影响。
+//
+// perf_event_attr 手工按 PERF_ATTR_SIZE_VER0(64B)布局打包:
+// x/sys 的 PerfEventAttr 字段表示随版本漂移(v0.43.0 已与常见写法不同),
+// 而 perf_event_attr 本身是极稳定的内核 UAPI, 字节布局直写更可靠。
+func (l *Loader) attachTracepointLegacy(system, name string, prog *ebpf.Program) (int, error) {
+	id, err := readTracepointID(system, name)
+	if err != nil {
+		return -1, err
+	}
+
+	var attr [64]byte
+	binary.LittleEndian.PutUint32(attr[0:4], 2)           /* type = PERF_TYPE_TRACEPOINT */
+	binary.LittleEndian.PutUint32(attr[4:8], 64)          /* size = PERF_ATTR_SIZE_VER0 */
+	binary.LittleEndian.PutUint64(attr[8:16], uint64(id)) /* config = tracepoint id */
+	binary.LittleEndian.PutUint64(attr[16:24], 1)         /* sample_period = 1 */
+	/* attr[24:32] sample_type = 0; attr[32:40] read_format = 0 */
+	binary.LittleEndian.PutUint64(attr[40:48], 1)         /* 位标志字: bit0 = disabled */
+
+	fd, _, errno := unix.Syscall6(unix.SYS_PERF_EVENT_OPEN,
+		uintptr(unsafe.Pointer(&attr[0])), // attr
+		^uintptr(0),                       // pid = -1
+		0,                                 // cpu = 0
+		^uintptr(0),                       // group_fd = -1
+		unix.PERF_FLAG_FD_CLOEXEC,
+		0)
+	if errno != 0 {
+		return -1, fmt.Errorf("perf_event_open: %w", errno)
+	}
+	if err := unix.IoctlSetInt(int(fd), unix.PERF_EVENT_IOC_SET_BPF, int(prog.FD())); err != nil {
+		unix.Close(int(fd))
+		return -1, fmt.Errorf("IOC_SET_BPF: %w", err)
+	}
+	if err := unix.IoctlSetInt(int(fd), unix.PERF_EVENT_IOC_ENABLE, 0); err != nil {
+		unix.Close(int(fd))
+		return -1, fmt.Errorf("IOC_ENABLE: %w", err)
+	}
+	return int(fd), nil
 }
 
 // attachCgroupHooks attach cgroup sockaddr 程序到指定 cgroup（调用方持锁）。
@@ -420,6 +527,12 @@ func (l *Loader) Close() error {
 		}
 	}
 	l.links = nil
+	for _, pf := range l.legacyPerfFds {
+		if err := unix.Close(pf.fd); err != nil {
+			l.logger(fmt.Sprintf("[loader] 关闭旧通道挂载 %s 失败: %v", pf.event, err))
+		}
+	}
+	l.legacyPerfFds = nil
 	l.closeCgroupLinksLocked()
 	if l.coll != nil {
 		l.coll.Close()

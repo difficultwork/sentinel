@@ -214,10 +214,23 @@ sentinel/
 - **污染触发**：`openat` 读取受监控路径前缀（`watch_map`，配置驱动，
   最多 8 条 × 63 字节，路径边界感知：`/home/u/.ssh` 不会匹配
   `/home/u/.sshx`）
-- **污点传播**：`sched_process_fork` 时父进程（按 tgid，覆盖非 leader
-  线程 fork 场景）污点被子进程继承
+- **污点传播**：父进程（按 tgid，覆盖非 leader 线程 fork 场景）污点由
+  子进程继承。挂载三级兜底：
+  1. `sched_process_fork` tracepoint（bpf_link 通道，常规内核）；
+  2. perf_event_open + `PERF_EVENT_IOC_SET_BPF` 旧通道（bpf_link 被拒时）；
+  3. `fexit/kernel_clone`（BPF trampoline，两条 perf 通道均被拒时——
+     实测 6.18-microsoft-standard-WSL2 对该 tracepoint 的 BPF 绑定
+     一律 EACCES，fexit 与 perf 子系统无关，且 kernel_clone 自 5.10
+     稳定存在；无 BTF 内核上自动剔除该程序，BTF 保持可选）
 - **污点清除**：仅 leader 线程退出清除进程键；普通线程退出仅清理
   自身 tid 键——修复了旧版"任意线程退出即洗白进程污点"的逃逸漏洞
+- **布局防护（tracepoint ctx）**：`sys_enter_openat` 的上下文结构按
+  LP64（x86-64/arm64，`long`=8）真实布局硬编码（`args[6]@16` 每参数
+  8 字节，filename@24/flags@32），配两道防线：编译期 `_Static_assert`
+  钉死偏移；启动期解析 tracefs `format` 文件核对，不符则**显式停用
+  污点特性**并说明实际 offset（而非带着错位结构静默空转）。错位事故
+  曾在 Docker Desktop(WSL2) 内核上潜伏：dfd 被当指针读，
+  `bpf_probe_read_user_str` 每次静默 EFAULT。
 
 ### 3. 事件上报
 
@@ -276,6 +289,12 @@ make test   # 单元测试（-race）
 3. **单机模式**：审批通道监听 localhost，分布式部署需额外的状态同步。
 4. **冻结粒度**：按被治理 cgroup 整体冻结（通常是一个容器），同 cgroup
    内所有进程一并暂停，无法只豁免其中个别进程。
+5. **LP64 架构假设**：openat ctx 布局按 64 位长整型（x86-64/arm64）
+   硬编码；32 位内核布局不同，启动期校验会显式拒绝污点特性（其余
+   功能不受影响）。
+6. **污点传播的线程噪音**：fexit/kernel_clone 兜底通道不区分进程/线程
+   创建（避免 CO-RE 依赖），Go 运行时起线程也会各记一条"污点传播"
+   日志；线程键不参与判定（判定恒用 tgid），线程退出即清理。
 
 ## 技术栈
 
@@ -286,7 +305,7 @@ make test   # 单元测试（-race）
 | Go 编译器 | Go | >= 1.25 |
 | eBPF 程序类型 | CGROUP_SOCK_ADDR + tracepoint | kernel >= 5.15 |
 | 事件传输 | BPF_MAP_TYPE_RINGBUF (16 MiB) | kernel >= 5.8 |
-| 污点追踪 | tracepoint (sched + syscalls) | — |
+| 污点追踪 | tracepoint (sched + syscalls) + fexit/kernel_clone 兜底 | 兜底需 BTF(可选) |
 | 进程冻结 | cgroup v2 freeze / v1 freezer | v2 优先，v1 回退 |
 | 字节码分发 | go:embed（构建期编入二进制） | Go >= 1.25 |
 
