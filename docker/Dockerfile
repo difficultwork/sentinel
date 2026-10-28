@@ -19,6 +19,11 @@ RUN go build -o ./bin/sentinel ./cmd/sentinel && \
 
 FROM ubuntu:24.04 AS final
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends linux-tools-common linux-tools-generic && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -sf /usr/lib/linux-tools/*/bpftool /usr/local/bin/bpftool || true
+
 COPY --from=builder /app/bin/sentinel /usr/local/bin/sentinel
 COPY --from=builder /app/bin/sentinel-cli /usr/local/bin/sentinel-cli
 COPY --from=builder /app/bin/demo-agent /usr/local/bin/demo-agent

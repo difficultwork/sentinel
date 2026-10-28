@@ -116,18 +116,39 @@ struct sched_process_fork_ctx {
     __s32 child_pid;            /* 44 */
 };                              /* 48 字节 */
 
-/* tracepoint: syscalls/sys_enter_openat 上下文（同理，对齐 tracefs format） */
+_Static_assert(__builtin_offsetof(struct sched_process_fork_ctx, parent_pid) == 24,
+               "sched_process_fork: parent_pid 必须在 offset 24");
+_Static_assert(__builtin_offsetof(struct sched_process_fork_ctx, child_pid) == 44,
+               "sched_process_fork: child_pid 必须在 offset 44");
+
+/* tracepoint: syscalls/sys_enter_openat 上下文
+ *
+ * 与 tracefs format 实测对齐（x86-64: 参数区为 long args[6]@16, 每参数 8 字节）:
+ *   dfd@16(8) filename@24(8) flags@32(8) mode@40(8), 总 48 字节。
+ * 参数错位会把 dfd 当指针读, probe_read_user_str 静默 EFAULT, 污点链全灭
+ * （曾潜伏: 假设过 int dfd@12/filename@16 的紧凑布局, 实际内核并非如此）。
+ * 参考 libbpf-tools opensnoop 的 trace_event_raw_sys_enter。
+ */
 struct sys_enter_openat_ctx {
     __u16 common_type;          /*  0 */
     __u8  common_flags;         /*  2 */
     __u8  common_preempt_count; /*  3 */
     __s32 common_pid;           /*  4 */
     __s32 __syscall_nr;         /*  8 */
-    /* 12-15: 指针对齐填充 */
-    const char *filename;       /* 16 */
-    __s32 flags;                /* 24 */
-    __u16 mode;                 /* 28 */
+    /* 12-15: 对齐填充 */
+    __u64 dfd;                  /* 16 */
+    const char *filename;       /* 24 */
+    __u64 flags;                /* 32 */
+    __u64 mode;                 /* 40 */
 };
+
+/* 编译期钉死关键偏移(LP64: x86-64/arm64 的 long=8)。
+ * 错位会把 dfd 当指针读, probe_read_user_str 静默 EFAULT, 污点链全灭。
+ * 另有启动期 format 校验兜底(见 loader.verifySysEnterOpenatLayout)。 */
+_Static_assert(__builtin_offsetof(struct sys_enter_openat_ctx, filename) == 24,
+               "sys_enter_openat: filename 必须在 offset 24 (LP64 long args[6]@16)");
+_Static_assert(__builtin_offsetof(struct sys_enter_openat_ctx, flags) == 32,
+               "sys_enter_openat: flags 必须在 offset 32");
 
 /* 受监控路径前缀（由用户态从配置写入 watch_map） */
 struct watch_path {

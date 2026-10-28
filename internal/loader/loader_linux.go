@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"github.com/cilium/ebpf"
@@ -105,6 +106,12 @@ func (l *Loader) Load() error {
 
 // attachTracepoints attach 污点追踪相关的 tracepoint 程序。
 func (l *Loader) attachTracepoints(coll *ebpf.Collection) {
+	if err := verifySysEnterOpenatLayout(); err != nil {
+		l.logger(fmt.Sprintf("[loader] 污点特性已停用: 运行内核的 sys_enter_openat 布局校验失败: %v", err))
+		l.logger("[loader] 提示: 布局错位会导致 probe_read_user_str 静默失败, 故显式停用而非带病运行")
+		return
+	}
+
 	tracepointProgs := []struct {
 		progName string
 		category string
@@ -129,6 +136,64 @@ func (l *Loader) attachTracepoints(coll *ebpf.Collection) {
 		l.links = append(l.links, lk)
 		l.logger(fmt.Sprintf("[loader] tracepoint 已 attach: %s/%s", tp.category, tp.event))
 	}
+}
+
+// tracefsPathCandidates 是 tracefs 常见挂载点(与 cilium/ebpf 的查找顺序一致)。
+var tracefsPathCandidates = []string{
+	"/sys/kernel/tracing",
+	"/sys/kernel/debug/tracing",
+}
+
+// fieldOffsetRe 匹配 tracefs format 行: "field:<type> <name>;<空格>offset:<n>;"
+var fieldOffsetRe = regexp.MustCompile(`field:[^;]*[ \t](\w+);[^\n]*?offset:(\d+)`)
+
+// parseTraceFieldOffset 从 format 内容中提取指定字段的 offset。
+// 找不到返回 -1。
+func parseTraceFieldOffset(format []byte, name string) int {
+	for _, m := range fieldOffsetRe.FindAllSubmatch(format, -1) {
+		if string(m[1]) == name {
+			n := 0
+			for _, c := range m[2] {
+				n = n*10 + int(c-'0')
+			}
+			return n
+		}
+	}
+	return -1
+}
+
+// verifySysEnterOpenatLayout 校验运行内核的 sys_enter_openat tracepoint
+// 布局与 BPF 结构体假设一致(LP64: filename@24, flags@32)。
+//
+// 动机: ctx 偏移错位会把 dfd 当指针读, bpf_probe_read_user_str 对每次
+// openat 静默 EFAULT, 污点标记链整体失效且无任何报错——该坑曾在
+// Docker Desktop(WSL2) 内核上潜伏, 直到对照 format 文件才定位。
+// 支持矩阵: LP64 架构(x86-64/arm64, long=8); 32 位内核布局不同, 会在此显式拒绝。
+func verifySysEnterOpenatLayout() error {
+	var format []byte
+	var lastErr error
+	for _, dir := range tracefsPathCandidates {
+		b, err := os.ReadFile(filepath.Join(dir, "events/syscalls/sys_enter_openat/format"))
+		if err == nil {
+			format = b
+			break
+		}
+		lastErr = err
+	}
+	if format == nil {
+		return fmt.Errorf("无法读取 tracefs format(需挂载 tracefs): %w", lastErr)
+	}
+
+	for name, want := range map[string]int{"filename": 24, "flags": 32} {
+		got := parseTraceFieldOffset(format, name)
+		if got < 0 {
+			return fmt.Errorf("format 中未找到字段 %s", name)
+		}
+		if got != want {
+			return fmt.Errorf("字段 %s 位于 offset %d, 与 LP64 预期 %d 不符(非 LP64 内核?)", name, got, want)
+		}
+	}
+	return nil
 }
 
 // attachCgroupHooks attach cgroup sockaddr 程序到指定 cgroup（调用方持锁）。
