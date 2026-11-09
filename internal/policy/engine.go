@@ -75,7 +75,19 @@ type ApprovalRequest struct {
 	Taint       uint32    // 污点状态
 	Description string    // 人类可读描述
 	Timestamp   time.Time // 请求时间
+
+	// 提案通道专属字段(Kind == KindProposal 时有效)。
+	// Kind 为空表示出口连接类请求(存量生产方无需改动)。
+	Kind       string // "" = 出口连接; KindProposal = 连接器动作提案
+	ActionType string // 提案动作(CREATE_CONNECTOR / INVOKE_SKILL ...)
+	Target     string // 提案目标(服务标识或凭证 ID)
+	UID        uint32 // 提案发起进程的宿主 UID(SO_PEERCRED)
 }
+
+// KindProposal 标记来自提案通道(UDS+SO_PEERCRED)的审批请求。
+// 消费端(守护进程结果循环)按它路由: 出口连接 → 策略引擎+freezer;
+// 提案 → proposal.Server 记忆裁决。
+const KindProposal = "proposal"
 
 // NewEngine 创建策略引擎实例。
 func NewEngine(opts Options) *Engine {

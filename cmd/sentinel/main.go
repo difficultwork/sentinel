@@ -35,6 +35,7 @@ import (
 	"github.com/sentinel-sec/sentinel/internal/freezer"
 	"github.com/sentinel-sec/sentinel/internal/loader"
 	"github.com/sentinel-sec/sentinel/internal/policy"
+	"github.com/sentinel-sec/sentinel/internal/proposal"
 )
 
 // tempAllowCleanupInterval 是临时放行(temp_allow)过期回收的扫描周期。
@@ -141,17 +142,43 @@ func main() {
 	}
 	defer apiSrv.Stop()
 
-	// 8. 审批结果消费者（对称语义）: 批准 → 临时放行(含内核 map)+ 解冻;
-	//    用户拒绝 → 持久拉黑 + 解冻; 超时 → 仅解冻(不改策略, 重新进入审批)
+	// 8. 提案通道(UDS + SO_PEERCRED): Agent 提交连接器动作提案并同步
+	//    获得裁决。与网络出口管控相互独立, 不触发 connect4/6 钩子。
+	//    必须先于结果消费者创建: 提案类审批结果要路由回 propSrv 记忆裁决。
+	var propSrv *proposal.Server
+	if cfg.Proposal.Enabled && !*dryRun {
+		propSrv, err = proposal.NewServer(proposal.Deps{
+			SocketPath:   cfg.Proposal.SocketPath,
+			AllowedUIDs:  cfg.Proposal.AllowedUIDs,
+			Authd:        authProxy,
+			SurrogateTTL: cfg.Authd.SurrogateTTL,
+			Approvals:    mgr,
+			Logger:       logger,
+		})
+		if err != nil {
+			log.Fatalf("提案通道启动失败: %v", err)
+		}
+		defer propSrv.Close()
+	}
+
+	// 9. 审批结果消费者（对称语义）: 出口连接 → 批准=临时放行+解冻 /
+	//    拒绝=持久拉黑+解冻 / 超时=仅解冻; 提案 → 记忆裁决(批准=ALLOW,
+	//    拒绝=DENY, 超时=非裁决)
 	resultDone := make(chan struct{})
 	go func() {
 		defer close(resultDone)
 		for res := range mgr.Results() {
+			if res.Request.Kind == policy.KindProposal {
+				if propSrv != nil {
+					propSrv.HandleApprovalResult(res)
+				}
+				continue
+			}
 			handleApprovalResult(res, eng, fz, cfg)
 		}
 	}()
 
-	// 9. 过期临时放行清理(唯一撤销机制, 见 tempAllowCleanupInterval 注释)
+	// 10. 过期临时放行清理(唯一撤销机制, 见 tempAllowCleanupInterval 注释)
 	go func() {
 		ticker := time.NewTicker(tempAllowCleanupInterval)
 		defer ticker.Stop()
@@ -165,7 +192,7 @@ func main() {
 		return
 	}
 
-	// 10. 加载 eBPF 并灌入初始策略
+	// 11. 加载 eBPF 并灌入初始策略
 	if err := ldr.Load(); err != nil {
 		log.Printf("警告: eBPF 加载失败: %v", err)
 		if errors.Is(err, loader.ErrUnsupportedPlatform) {
@@ -208,7 +235,7 @@ func main() {
 	}
 	defer ldr.Close()
 
-	// 11. 事件处理循环（独立 goroutine，绝不被审批阻塞）
+	// 12. 事件处理循环（独立 goroutine，绝不被审批阻塞）
 	go func() {
 		handler := func(evt events.EventDesc) {
 			switch evt.Type {
@@ -240,7 +267,7 @@ func main() {
 		}
 	}()
 
-	// 12. 等待退出信号
+	// 13. 等待退出信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-sigCh

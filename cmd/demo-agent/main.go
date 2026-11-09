@@ -17,6 +17,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/sentinel-sec/sentinel/internal/proposal"
 )
 
 func main() {
@@ -24,10 +26,22 @@ func main() {
 	taint := flag.Bool("taint", false, "模拟污点: 先读取一个假敏感文件")
 	sleepMs := flag.Int("sleep", 500, "每次操作间隔(毫秒)")
 	retries := flag.Int("retries", 60, "连接被拦截时的最大重试次数(保持进程存活, 等待审批放行)")
+
+	// 提案模式: 通过 UDS 提案通道提交动作提案并打印裁决(不走网络)
+	propAction := flag.String("proposal-action", "", "提案动作: CREATE_CONNECTOR / REQUEST_CREDENTIAL / INVOKE_SKILL")
+	propTarget := flag.String("proposal-target", "", "提案目标(服务标识或凭证 ID, 如 gmail)")
+	propScope := flag.String("proposal-scope", "read", "提案范围: read / write / full")
+	propSock := flag.String("proposal-sock", "/run/sentinel/proposal.sock", "提案通道套接字路径")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("=== Sentinel Demo Agent ===")
+
+	if *propAction != "" {
+		runProposal(*propAction, *propTarget, *propScope, *propSock)
+		return
+	}
+
 	log.Printf("目标: %s", *target)
 	log.Printf("污点模拟: %v", *taint)
 	log.Println()
@@ -122,4 +136,30 @@ func isConnectionRefused(err error) bool {
 		strings.Contains(msg, "denied") ||
 		strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "not permitted") // EPERM: 部分 connect 拦截路径返回
+}
+
+// runProposal 提案模式: 通过 UDS 提案通道提交一条动作提案, 打印裁决并退出。
+// 全程 AF_UNIX, 不产生任何 TCP/UDP 流量(不触发 connect4/6 出口钩子)。
+func runProposal(action, target, scope, sock string) {
+	reqID := fmt.Sprintf("prop-%d-%d", os.Getpid(), time.Now().UnixNano())
+	req := proposal.Request{
+		RequestID:     reqID,
+		ActionType:    proposal.ActionType(action),
+		Target:        target,
+		Scope:         scope,
+		ContextDigest: "demo-task-context",
+		Timestamp:     time.Now().Unix(),
+	}
+	log.Printf("[提案] action=%s target=%s scope=%s → %s", action, target, scope, sock)
+	resp, err := proposal.Propose(sock, req, 10*time.Second)
+	if err != nil {
+		log.Fatalf("[提案] 失败: %v", err)
+	}
+	log.Printf("[裁决] decision=%s reason=%s policy=%s", resp.Decision, resp.Reason, resp.PolicySnapshot)
+	if resp.SurrogateToken != "" {
+		log.Printf("[裁决] 替身令牌已签发(长度 %d, 明文不落日志)", len(resp.SurrogateToken))
+	}
+	if resp.Decision == proposal.DecisionDeny {
+		os.Exit(1)
+	}
 }

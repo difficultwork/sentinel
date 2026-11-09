@@ -24,6 +24,9 @@ services:
     tty: true
     command: bash
     # CLI 与守护进程同容器(127.0.0.1): docker exec -it sentinel-mgmt bash
+    volumes:
+      # 提案通道套接字目录(UDS+SO_PEERCRED): 与 agent 容器共享同一文件
+      - sentinel-proposal:/run/sentinel-proposal
 
   agent:
     image: sentinel:latest
@@ -32,4 +35,9 @@ services:
     stdin_open: true
     tty: true
     command: bash
+    volumes:
+      - sentinel-proposal:/run/sentinel-proposal
     # demo-agent 通过 docker exec 在此容器内运行(README 有命令)
+
+volumes:
+  sentinel-proposal:

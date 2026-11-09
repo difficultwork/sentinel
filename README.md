@@ -267,7 +267,39 @@ Agent 只接触 surrogate token（代理令牌）：TTL 限制（默认 1 小时
 全部行为由 configs/sentinel.yaml 驱动（缺失字段回退内置默认值，非法值
 启动即报错）：审批地址/超时/令牌路径、eBPF 开关、初始允许/拒绝列表
 （v4/v6 双栈，v6 条目写法 `[addr]:port`）、临时放行 TTL、受监控路径、
-freezer 策略、凭证元信息（真实值走 `value_env` 环境变量）等。
+freezer 策略、凭证元信息（真实值走 `value_env` 环境变量）、提案通道
+（开关/套接字路径/允许 UID 列表）等。
+
+## 提案通道（UDS + SO_PEERCRED）
+
+Agent 在被治理容器内向 Sentinel 提交"连接器动作提案"（创建连接器、
+请求凭证、调用已保存 skill）并同步获得裁决的 **应用层 IPC 通道**：
+
+- **全程 AF_UNIX**：不产生任何 TCP/UDP 收发，不触发 connect4/6 出口
+  钩子；与网络出口管控相互独立——提案获批后 Agent 的真实网络请求
+  仍由出口钩子独立审批；
+- **内核级身份**：accept() 后立即读 SO_PEERCRED，以内核保证的
+  uid/gid/pid 做授权；消息体内任何自报身份字段不参与授权；
+  身份不符的连接**不读请求体直接断开**并审计；
+- **跨命名空间**：两端无需共享 PID/网络/IPC 命名空间，套接字文件经
+  bind mount（或共享卷）跨容器可见；agent 容器启用 user namespace 时，
+  ACL 按宿主 UID 配置（SO_PEERCRED 返回监听方命名空间视角的值）；
+- **消息契约**：4 字节大端长度 + JSON；响应含 decision
+  （ALLOW/DENY/REQUIRE_USER_APPROVAL）、reason、policy_snapshot，
+  凭证类 ALLOW 额外携带 authd 签发的替身令牌；
+- **v1 固定策略**（`fixed-policy-v1`）：建连接器与非只读技能→需人工
+  审批；只读技能→放行；申请凭证→凭证存在即发放替身令牌；
+- **审批闭环**：需人工审批的提案会同步在审批通道落一张卡
+  （`sentinel-cli pending` 可见、approve/deny 可操作，同提案去重），
+  响应的 reason 携带审批请求 ID；批准/拒绝的结果被提案侧记忆
+  （按 uid|动作|目标 键），Agent 重提案即获 ALLOW/DENY 终局；
+  超时沿用固定语义——非裁决，重新提案再次等待审批；
+- **安全细节**：消息上限 64KB、空闲连接 30s 回收、套接字目录对全局
+  可写则拒绝启动、残留套接字启动时先 unlink、审计日志含完整裁决链路
+  但绝不包含凭证/令牌明文。
+
+验证入口：`demo-agent --proposal-action INVOKE_SKILL --proposal-target
+gmail --proposal-scope read`（详见 docker/README.md 提案场景）。
 
 ## 测试
 
@@ -278,7 +310,8 @@ make test   # 单元测试（-race）
 覆盖：策略决策矩阵全组合、临时放行 TTL 过期、内核 map 同步调用、
 配置解析（完整语法/默认值回退/非法值拒绝）、审批状态机
 （批准/拒绝/超时/重复提交/非阻塞）、事件解码器
-（字段偏移/截断报错）。
+（字段偏移/截断报错）、提案通道（帧编解码/长度上限/策略表/
+UDS+SO_PEERCRED 端到端）。
 
 ## 已知限制
 

@@ -66,6 +66,11 @@ authd:
 
 logging:
   level: "debug"
+
+proposal:
+  enabled: true
+  socket_path: "/run/sentinel-test/proposal.sock"
+  allowed_uids: [0, 1000]
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sentinel.yaml")
@@ -80,6 +85,15 @@ logging:
 
 	if cfg.Approval.ListenAddr != "127.0.0.1:9000" {
 		t.Errorf("listen_addr = %q", cfg.Approval.ListenAddr)
+	}
+	if !cfg.Proposal.Enabled {
+		t.Errorf("proposal.enabled 应为 true")
+	}
+	if cfg.Proposal.SocketPath != "/run/sentinel-test/proposal.sock" {
+		t.Errorf("proposal.socket_path = %q", cfg.Proposal.SocketPath)
+	}
+	if len(cfg.Proposal.AllowedUIDs) != 2 || cfg.Proposal.AllowedUIDs[1] != 1000 {
+		t.Errorf("proposal.allowed_uids = %+v", cfg.Proposal.AllowedUIDs)
 	}
 	if cfg.Approval.Timeout != 90*time.Second {
 		t.Errorf("timeout = %v", cfg.Approval.Timeout)
@@ -159,6 +173,7 @@ func TestValidateErrors(t *testing.T) {
 		{"v6 条目缺方括号", "policy:\n  allow:\n    - \"2001:db8::1:443\"\n"},
 		{"watch_paths 超条数", "taint:\n  watch_paths:\n    - \"/a1\"\n    - \"/a2\"\n    - \"/a3\"\n    - \"/a4\"\n    - \"/a5\"\n    - \"/a6\"\n    - \"/a7\"\n    - \"/a8\"\n    - \"/a9\"\n"},
 		{"凭证缺 value_env", "authd:\n  credentials:\n    - id: \"x\"\n      type: \"api_key\"\n"},
+		{"提案套接字相对路径", "proposal:\n  enabled: true\n  socket_path: \"run/x.sock\"\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

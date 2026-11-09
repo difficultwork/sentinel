@@ -73,6 +73,19 @@ authd:
 
   surrogate_ttl: "1h"       # 代理令牌有效期
 
+# 提案通道(UDS + SO_PEERCRED, 与网络出口管控相互独立)
+# Agent 在被治理容器内通过 Unix 域套接字提交"连接器动作提案"并同步获得
+# 裁决; 全程不走 TCP/UDP, 不触发 connect4/6 出口钩子。
+# 身份唯一依据内核 SO_PEERCRED(uid), 消息内自报身份不参与授权。
+# 部署前提: 套接字目录需 bind mount(或共享卷)挂入被治理容器, 见 docker/README.md。
+# 超时/消息上限(64KB)为固定语义, 不设配置项。
+proposal:
+  enabled: false
+  socket_path: "/run/sentinel-proposal/proposal.sock"
+  # 允许连接的宿主 UID 列表; agent 容器启用 user namespace 时
+  # 必须填宿主 UID(SO_PEERCRED 返回的是监听方命名空间视角的值)
+  allowed_uids: [0]
+
 # 日志
 logging:
   level: "info"       # debug | info | warn | error

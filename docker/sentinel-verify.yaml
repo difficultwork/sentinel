@@ -39,3 +39,11 @@ freezer:
 
 authd:
   enabled: false
+
+# 提案通道: compose 已把共享卷 sentinel-proposal 挂到两容器的
+# /run/sentinel-proposal, agent 容器内 demo-agent --proposal-* 直连此路径。
+# agent 容器以 root 运行(宿主 UID 0), 故 allowed_uids: [0]。
+proposal:
+  enabled: true
+  socket_path: "/run/sentinel-proposal/proposal.sock"
+  allowed_uids: [0]

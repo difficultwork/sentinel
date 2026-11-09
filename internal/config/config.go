@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -56,6 +58,13 @@ type Config struct {
 		SurrogateTTL time.Duration
 	}
 
+	Proposal struct {
+		Enabled     bool     // 提案通道开关(UDS+SO_PEERCRED, 与出口管控相互独立)
+		SocketPath  string   // 套接字绝对路径(bind mount 挂入被治理容器)
+		AllowedUIDs []uint32 // 允许连接的宿主 UID(SO_PEERCRED 视角;
+		// agent 容器启用 user namespace 时, 这里必须是宿主 UID)
+	}
+
 	Logging struct {
 		Level  string
 		Format string
@@ -98,6 +107,12 @@ func Default() Config {
 
 	c.Authd.Enabled = true
 	c.Authd.SurrogateTTL = time.Hour
+
+	// 提案通道默认关闭: 需要部署侧把套接字目录 bind mount 挂入被治理
+	// 容器后才可用(见 docker/README.md)。超时/消息上限是固定语义, 不设旋钮。
+	c.Proposal.Enabled = false
+	c.Proposal.SocketPath = "/run/sentinel/proposal.sock"
+	c.Proposal.AllowedUIDs = []uint32{0}
 
 	c.Logging.Level = "info"
 	c.Logging.Format = "text"
@@ -171,6 +186,25 @@ func decode(tree map[string]any, c *Config) error {
 			c.Authd.Credentials = creds
 		}
 	}
+	if m := getMap(tree, "proposal"); m != nil {
+		c.Proposal.Enabled = getBool(m, "enabled", c.Proposal.Enabled)
+		c.Proposal.SocketPath = getString(m, "socket_path", c.Proposal.SocketPath)
+		if items := getAnyList(m, "allowed_uids"); items != nil {
+			uids := make([]uint32, 0, len(items))
+			for i, it := range items {
+				s, ok := it.(string)
+				if !ok {
+					return fmt.Errorf("proposal.allowed_uids[%d] 必须是整数", i)
+				}
+				v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32)
+				if err != nil {
+					return fmt.Errorf("proposal.allowed_uids[%d] 无效: %w", i, err)
+				}
+				uids = append(uids, uint32(v))
+			}
+			c.Proposal.AllowedUIDs = uids
+		}
+	}
 	if m := getMap(tree, "logging"); m != nil {
 		c.Logging.Level = getString(m, "level", c.Logging.Level)
 		c.Logging.Format = getString(m, "format", c.Logging.Format)
@@ -221,6 +255,14 @@ func (c *Config) Validate() error {
 	for i, cred := range c.Authd.Credentials {
 		if cred.ID == "" || cred.Type == "" || cred.ValueEnv == "" {
 			return fmt.Errorf("authd.credentials[%d] 需要同时提供 id/type/value_env", i)
+		}
+	}
+	if c.Proposal.Enabled {
+		if !strings.HasPrefix(c.Proposal.SocketPath, "/") {
+			return fmt.Errorf("proposal.socket_path 必须是绝对路径: %s", c.Proposal.SocketPath)
+		}
+		if len(c.Proposal.AllowedUIDs) == 0 {
+			return fmt.Errorf("proposal.enabled 时 allowed_uids 至少要有一个宿主 UID")
 		}
 	}
 	return nil

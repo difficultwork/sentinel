@@ -191,16 +191,22 @@ func (m *Manager) PendingCards() []Card {
 
 	cards := make([]Card, 0, len(m.pending))
 	for _, p := range m.pending {
-		cards = append(cards, Card{
+		c := Card{
 			RequestID:   p.req.RequestID,
 			ProcessName: p.req.Comm,
 			PID:         p.req.Pid,
-			Destination: fmt.Sprintf("%s:%d", p.req.DstIP, p.req.DstPort),
 			Reason:      p.req.Description,
 			Tainted:     p.req.Taint == 1,
 			Timestamp:   p.req.Timestamp.Format(time.RFC3339),
 			Status:      "pending",
-		})
+		}
+		if p.req.Kind == policy.KindProposal {
+			// 提案卡: 目标位展示"动作 目标"(无 ip:port 语义)
+			c.Destination = fmt.Sprintf("%s %s", p.req.ActionType, p.req.Target)
+		} else {
+			c.Destination = fmt.Sprintf("%s:%d", p.req.DstIP, p.req.DstPort)
+		}
+		cards = append(cards, c)
 	}
 	return cards
 }
