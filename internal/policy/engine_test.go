@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/events"
+	"sentinel/internal/events"
 )
 
 // mockMapSync 记录内核 map 同步调用，用于断言同步行为。

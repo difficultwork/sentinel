@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/policy"
+	"sentinel/internal/policy"
 )
 
 func newTestReq(id string) policy.ApprovalRequest {

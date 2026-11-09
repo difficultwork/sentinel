@@ -19,9 +19,9 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/sentinel-sec/sentinel/internal/approval"
-	"github.com/sentinel-sec/sentinel/internal/authd"
-	"github.com/sentinel-sec/sentinel/internal/policy"
+	"sentinel/internal/approval"
+	"sentinel/internal/authd"
+	"sentinel/internal/policy"
 )
 
 // 连接级超时(固定值, 不暴露配置): 客户端为每次提案建立短连接即可,
@@ -91,9 +91,20 @@ type Server struct {
 	// 审批闭环状态: 决策记忆 + 待审卡去重(键 = uid|action|target)。
 	// 语义与出口管控对称: 批准→ALLOW(随守护进程生命周期), 拒绝→DENY,
 	// 超时→非裁决(不记忆, 重新提案再次等待审批)。
+	//
+	// waiters: 同键下等待终局"推送"的连接。裁决落定时由
+	// HandleApprovalResult 直接把终局 Response 写回这些连接——
+	// 客户端保持连接阻塞读取即可, 无需轮询重提案。
 	mu           sync.Mutex
 	decisions    map[string]Decision
 	pendingCards map[string]string
+	waiters      map[string][]*waiter
+}
+
+// waiter 是一个等待终局推送的请求(通道缓冲 1, 推送永不阻塞)。
+type waiter struct {
+	reqID string
+	ch    chan Response
 }
 
 // pkey 生成提案决策记忆键。
@@ -146,6 +157,7 @@ func NewServer(d Deps) (*Server, error) {
 		deps:         d,
 		decisions:    make(map[string]Decision),
 		pendingCards: make(map[string]string),
+		waiters:      make(map[string][]*waiter),
 	}
 	for _, uid := range d.AllowedUIDs {
 		s.allowed[uid] = struct{}{}
@@ -226,12 +238,19 @@ func (s *Server) handleConn(conn net.Conn) {
 			s.denyAndClose(conn, "-", "消息格式非法")
 			return
 		}
-		resp := s.decide(cred, &req)
+		resp, waitKey := s.decide(cred, &req)
 		s.audit(cred, req.RequestID, resp.Decision, resp.Reason)
 
 		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		if err := writeMessage(conn, &resp); err != nil {
 			return
+		}
+
+		// 需人工审批: 连接停靠等待推送(一次性客户端已拿到中间响应退出,
+		// 断开由写入失败自然清理; 等待的客户端在审批落定时收到终局)。
+		if waitKey != "" {
+			s.parkAndWait(conn, cred, waitKey, req.RequestID)
+			continue
 		}
 	}
 }
@@ -296,10 +315,11 @@ func evaluate(req *Request, authdProxy *authd.Proxy, ttl time.Duration) Response
 //  1. 先查决策记忆(用户已批准/已拒绝的提案直接回最终裁决);
 //  2. 走 v1 固定策略表;
 //  3. 结果为需人工审批时, 在审批通道落一张卡(同 key 去重),
-//     并在 reason 里回执审批请求 ID——Agent 侧流程为"提案→等审批→重提案"。
+//     并在 reason 里回执审批请求 ID。
 //
-// 无审批管理器(单元测试/降级部署)时退化为只回话不落卡。
-func (s *Server) decide(cred ucred, req *Request) Response {
+// 返回的第二个值非空表示"该键已进入审批流程, 连接可停靠等待终局推送"。
+// 无审批管理器(单元测试/降级部署)时退化为只回话不落卡(返回空键)。
+func (s *Server) decide(cred ucred, req *Request) (Response, string) {
 	key := pkey(cred.Uid, string(req.ActionType), req.Target)
 
 	s.mu.Lock()
@@ -309,18 +329,18 @@ func (s *Server) decide(cred ucred, req *Request) Response {
 		if d == DecisionAllow {
 			reason = "用户已批准此提案"
 		}
-		return Response{RequestID: req.RequestID, Decision: d, Reason: reason, PolicySnapshot: PolicySnapshotV1}
+		return Response{RequestID: req.RequestID, Decision: d, Reason: reason, PolicySnapshot: PolicySnapshotV1}, ""
 	}
 	pendingID, hasPending := s.pendingCards[key]
 	s.mu.Unlock()
 
 	resp := evaluate(req, s.deps.Authd, s.deps.SurrogateTTL)
 	if resp.Decision != DecisionRequireUserApproval || s.deps.Approvals == nil {
-		return resp
+		return resp, ""
 	}
 	if hasPending {
-		resp.Reason = fmt.Sprintf("等待用户审批(已有待审请求 %s, 处理后重新提案即得最终裁决)", pendingID)
-		return resp
+		resp.Reason = fmt.Sprintf("等待用户审批(已有待审请求 %s); 连接保持等待推送, 也可处理后再提案", pendingID)
+		return resp, key
 	}
 
 	areq := policy.ApprovalRequest{
@@ -336,18 +356,56 @@ func (s *Server) decide(cred ucred, req *Request) Response {
 	}
 	if err := s.deps.Approvals.Submit(areq); err != nil {
 		resp.Reason = "需人工审批, 但审批通道暂不可用, 请稍后重新提案"
-		return resp
+		return resp, ""
 	}
 	s.mu.Lock()
 	s.pendingCards[key] = areq.RequestID
 	s.mu.Unlock()
-	resp.Reason = fmt.Sprintf("等待用户审批(审批请求 %s; 批准或拒绝后重新提案即得最终裁决)", areq.RequestID)
-	return resp
+	resp.Reason = fmt.Sprintf("等待用户审批(审批请求 %s); 连接保持等待推送, 批准或拒绝后终局即达", areq.RequestID)
+	return resp, key
+}
+
+// parkAndWait 把连接停靠在等待者表上, 直到审批落定推送终局。
+// 安全上限 = 审批超时 + 30s 余量(正常路径由推送唤醒, 不靠这个兜底)。
+func (s *Server) parkAndWait(conn net.Conn, cred ucred, key, reqID string) {
+	w := &waiter{reqID: reqID, ch: make(chan Response, 1)}
+	s.mu.Lock()
+	s.waiters[key] = append(s.waiters[key], w)
+	s.mu.Unlock()
+
+	cap := s.deps.Approvals.Timeout() + 30*time.Second
+	select {
+	case final := <-w.ch:
+		s.audit(cred, reqID, final.Decision, final.Reason)
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
+		if err := writeMessage(conn, &final); err != nil {
+			s.unregisterWaiter(key, w)
+		}
+	case <-time.After(cap):
+		s.unregisterWaiter(key, w)
+	}
+}
+
+// unregisterWaiter 把等待者移出等待表(连接已断/等待超限)。
+func (s *Server) unregisterWaiter(key string, w *waiter) {
+	s.mu.Lock()
+	list := s.waiters[key]
+	for i, x := range list {
+		if x == w {
+			s.waiters[key] = append(list[:i], list[i+1:]...)
+			break
+		}
+	}
+	if len(s.waiters[key]) == 0 {
+		delete(s.waiters, key)
+	}
+	s.mu.Unlock()
 }
 
 // HandleApprovalResult 消费审批结果(由守护进程结果循环按 Kind 路由进来)。
 // 语义与出口管控对称: 批准→记忆 ALLOW; 拒绝→记忆 DENY;
 // 超时→非裁决(仅清待审索引, 重新提案将再次等待审批)。
+// 裁决落定的同时, 向所有停靠中的连接推送终局 Response。
 func (s *Server) HandleApprovalResult(res approval.Result) {
 	req := res.Request
 	if req.Kind != policy.KindProposal {
@@ -364,7 +422,29 @@ func (s *Server) HandleApprovalResult(res approval.Result) {
 		}
 		s.decisions[key] = d
 	}
+	ws := s.waiters[key]
+	delete(s.waiters, key)
 	s.mu.Unlock()
+
+	// 推送终局到每个等待者(缓冲 1, 永不阻塞裁决路径)
+	for _, w := range ws {
+		resp := Response{RequestID: w.reqID, PolicySnapshot: PolicySnapshotV1}
+		switch {
+		case res.TimedOut:
+			resp.Decision = DecisionRequireUserApproval
+			resp.Reason = "审批超时(非裁决); 重新提案可再次等待审批"
+		case res.Approved:
+			resp.Decision = DecisionAllow
+			resp.Reason = "用户已批准此提案"
+		default:
+			resp.Decision = DecisionDeny
+			resp.Reason = "用户已拒绝此提案"
+		}
+		select {
+		case w.ch <- resp:
+		default:
+		}
+	}
 
 	if s.deps.Logger == nil {
 		return
@@ -374,10 +454,10 @@ func (s *Server) HandleApprovalResult(res approval.Result) {
 		s.deps.Logger(fmt.Sprintf("[proposal] 提案审批超时(非裁决): %s %s; 重新提案将再次等待审批",
 			req.ActionType, req.Target))
 	case res.Approved:
-		s.deps.Logger(fmt.Sprintf("[proposal] 用户批准提案: %s %s; Agent 重新提案将获得 ALLOW",
+		s.deps.Logger(fmt.Sprintf("[proposal] 用户批准提案: %s %s; 终局已推送等待中的 Agent",
 			req.ActionType, req.Target))
 	default:
-		s.deps.Logger(fmt.Sprintf("[proposal] 用户拒绝提案: %s %s; Agent 重新提案将获得 DENY",
+		s.deps.Logger(fmt.Sprintf("[proposal] 用户拒绝提案: %s %s; 终局已推送等待中的 Agent",
 			req.ActionType, req.Target))
 	}
 }

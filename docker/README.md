@@ -107,18 +107,24 @@ docker exec <agent> /tmp/demo-agent --proposal-sock /run/sentinel-proposal/propo
 docker exec <agent> /tmp/demo-agent --proposal-sock /run/sentinel-proposal/proposal.sock --proposal-action DO_EVIL --proposal-target x
 ```
 
-**审批闭环**（CREATE_CONNECTOR 之后的完整流程）：
+**审批闭环**（CREATE_CONNECTOR 之后的完整流程;demo-agent 默认
+`--proposal-wait` 开启——收到 REQUIRE_USER_APPROVAL 后**连接保持不动,
+阻塞等待服务端推送终局, 无轮询**）：
 
 ```powershell
 # 1) mgmt 内: 待审列表出现提案卡(destination 显示 "CREATE_CONNECTOR gmail")
 sentinel-cli pending
 # 2) 用 reason 里回执的完整 request-id 批准(或 deny)
 sentinel-cli approve req-<pid>-<ns>
-# 3) agent 内重提案同一动作 → 直接回 ALLOW(deny 则回 DENY), 不再出新卡
+# 3) agent 内: 挂着的 demo-agent 在这一瞬间自己打出终局
+#    decision=ALLOW reason=用户已批准此提案(deny 则 DENY 并退出码 1);
+#    若 demo-agent 已退出, 重跑同一条提案命令立即得到记忆中的终局, 不再出新卡
 docker exec <agent> /tmp/demo-agent --proposal-sock /run/sentinel-proposal/proposal.sock --proposal-action CREATE_CONNECTOR --proposal-target gmail
 ```
 
-超时(approval.timeout, 验证配置 10m)不裁决：卡片消失，重提案重新等待审批。
+超时(approval.timeout, 验证配置 10m)不裁决:推送一条"审批超时(非裁决)"
+说明后等待方退出; 重新提案可再次等待。demo-agent 侧另有
+--proposal-wait-timeout(默认 5m)作为客户端自身的等待上限。
 
 守护进程侧逐条出现审计日志（完整链路, 无凭证/令牌明文）：
 

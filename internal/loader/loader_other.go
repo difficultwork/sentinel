@@ -11,7 +11,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/sentinel-sec/sentinel/internal/events"
+	"sentinel/internal/events"
 )
 
 // Loader 在非 Linux 平台上是同构的桩：结构体只保留配置与日志，

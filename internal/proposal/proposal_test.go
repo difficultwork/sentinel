@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/approval"
-	"github.com/sentinel-sec/sentinel/internal/authd"
+	"sentinel/internal/approval"
+	"sentinel/internal/authd"
 )
 
 func TestFramingRoundTrip(t *testing.T) {
@@ -260,5 +260,90 @@ func waitForLog(t *testing.T, getLogs func() string, want string) {
 	}
 	if !strings.Contains(getLogs(), want) {
 		t.Fatalf("等待日志 %q 超时", want)
+	}
+}
+
+// 推送语义(无轮询): ProposeAndWait 阻塞等待, 审批落定时终局被主动推送。
+func TestPushWaitApproved(t *testing.T) {
+	mgr := approval.NewManager(5*time.Second, func(string) {})
+	srv, err := NewServer(Deps{
+		SocketPath:  t.TempDir() + "/p.sock",
+		AllowedUIDs: []uint32{uint32(os.Getuid())},
+		Approvals:   mgr,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+	go func() {
+		for res := range mgr.Results() {
+			srv.HandleApprovalResult(res)
+		}
+	}()
+
+	type outcome struct {
+		resp Response
+		err  error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		resp, err := ProposeAndWait(srv.path,
+			Request{RequestID: "w1", ActionType: ActionCreateConnector, Target: "gmail"}, 10*time.Second)
+		done <- outcome{resp, err}
+	}()
+
+	// 等审批卡出现后批准
+	deadline := time.Now().Add(2 * time.Second)
+	for mgr.PendingCount() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mgr.PendingCount() != 1 {
+		t.Fatal("等待审批卡出现超时")
+	}
+	if err := mgr.Approve(mgr.PendingCards()[0].RequestID); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	select {
+	case o := <-done:
+		if o.err != nil {
+			t.Fatalf("ProposeAndWait: %v", o.err)
+		}
+		if o.resp.Decision != DecisionAllow {
+			t.Fatalf("应推送 ALLOW 终局, got %s", o.resp.Decision)
+		}
+		if o.resp.RequestID != "w1" {
+			t.Fatalf("推送应回显 request_id, got %s", o.resp.RequestID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("等待终局推送超时")
+	}
+}
+
+// 推送语义(超时): 审批超时同样以推送送达(非裁决, 连接优雅结束)。
+func TestPushWaitTimeout(t *testing.T) {
+	mgr := approval.NewManager(80*time.Millisecond, func(string) {})
+	srv, err := NewServer(Deps{
+		SocketPath:  t.TempDir() + "/p.sock",
+		AllowedUIDs: []uint32{uint32(os.Getuid())},
+		Approvals:   mgr,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	defer srv.Close()
+	go func() {
+		for res := range mgr.Results() {
+			srv.HandleApprovalResult(res)
+		}
+	}()
+
+	resp, err := ProposeAndWait(srv.path,
+		Request{RequestID: "w2", ActionType: ActionCreateConnector, Target: "gmail"}, 10*time.Second)
+	if err != nil {
+		t.Fatalf("超时推送路径不应报错: %v", err)
+	}
+	if resp.Decision != DecisionRequireUserApproval || !strings.Contains(resp.Reason, "超时") {
+		t.Fatalf("应推送超时说明(非裁决), got decision=%s reason=%s", resp.Decision, resp.Reason)
 	}
 }

@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/events"
+	"sentinel/internal/events"
 )
 
 // MapSync 把用户态的列表变更同步到内核 BPF map。

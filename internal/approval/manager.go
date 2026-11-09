@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/policy"
+	"sentinel/internal/policy"
 )
 
 // Manager 管理审批状态机。
@@ -226,4 +226,10 @@ func (m *Manager) PendingChannel() <-chan policy.ApprovalRequest {
 // Results 返回审批结果通道。守护进程必须消费此通道。
 func (m *Manager) Results() <-chan Result {
 	return m.results
+}
+
+// Timeout 返回单次审批的超时(创建后不变, 可无锁读取)。
+// 提案通道用它作为"等待终局推送"的安全上限。
+func (m *Manager) Timeout() time.Duration {
+	return m.timeout
 }

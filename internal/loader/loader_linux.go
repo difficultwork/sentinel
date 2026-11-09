@@ -27,7 +27,7 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 
-	"github.com/sentinel-sec/sentinel/internal/events"
+	"sentinel/internal/events"
 )
 
 // legacyPerfFd 记录旧通道(perf_event_open + IOC_SET_BPF)挂载的 perf 事件 fd。

@@ -16,7 +16,7 @@ import (
 	_ "embed"
 	"errors"
 
-	"github.com/sentinel-sec/sentinel/internal/events"
+	"sentinel/internal/events"
 )
 
 // ErrUnsupportedPlatform 在非 Linux 平台上由桩实现返回。

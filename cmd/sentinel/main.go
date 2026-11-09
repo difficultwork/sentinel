@@ -27,15 +27,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/api"
-	"github.com/sentinel-sec/sentinel/internal/approval"
-	"github.com/sentinel-sec/sentinel/internal/authd"
-	"github.com/sentinel-sec/sentinel/internal/config"
-	"github.com/sentinel-sec/sentinel/internal/events"
-	"github.com/sentinel-sec/sentinel/internal/freezer"
-	"github.com/sentinel-sec/sentinel/internal/loader"
-	"github.com/sentinel-sec/sentinel/internal/policy"
-	"github.com/sentinel-sec/sentinel/internal/proposal"
+	"sentinel/internal/api"
+	"sentinel/internal/approval"
+	"sentinel/internal/authd"
+	"sentinel/internal/config"
+	"sentinel/internal/events"
+	"sentinel/internal/freezer"
+	"sentinel/internal/loader"
+	"sentinel/internal/policy"
+	"sentinel/internal/proposal"
 )
 
 // tempAllowCleanupInterval 是临时放行(temp_allow)过期回收的扫描周期。

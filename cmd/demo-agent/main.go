@@ -18,7 +18,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/proposal"
+	"sentinel/internal/proposal"
 )
 
 func main() {
@@ -32,13 +32,15 @@ func main() {
 	propTarget := flag.String("proposal-target", "", "提案目标(服务标识或凭证 ID, 如 gmail)")
 	propScope := flag.String("proposal-scope", "read", "提案范围: read / write / full")
 	propSock := flag.String("proposal-sock", "/run/sentinel/proposal.sock", "提案通道套接字路径")
+	propWait := flag.Bool("proposal-wait", true, "需人工审批时连接保持, 阻塞等待服务端推送终局(批准/拒绝即达, 无轮询), --proposal-wait=false 关闭")
+	propWaitTimeout := flag.Duration("proposal-wait-timeout", 5*time.Minute, "等待终局推送的最长时间")
 	flag.Parse()
 
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("=== Sentinel Demo Agent ===")
 
 	if *propAction != "" {
-		runProposal(*propAction, *propTarget, *propScope, *propSock)
+		runProposal(*propAction, *propTarget, *propScope, *propSock, *propWait, *propWaitTimeout)
 		return
 	}
 
@@ -140,20 +142,31 @@ func isConnectionRefused(err error) bool {
 
 // runProposal 提案模式: 通过 UDS 提案通道提交一条动作提案, 打印裁决并退出。
 // 全程 AF_UNIX, 不产生任何 TCP/UDP 流量(不触发 connect4/6 出口钩子)。
-func runProposal(action, target, scope, sock string) {
-	reqID := fmt.Sprintf("prop-%d-%d", os.Getpid(), time.Now().UnixNano())
+// 裁决为 REQUIRE_USER_APPROVAL 且开启等待时, 连接保持不动, 阻塞等待
+// 服务端在审批落定时推送的终局——无轮询。
+func runProposal(action, target, scope, sock string, wait bool, waitTimeout time.Duration) {
 	req := proposal.Request{
-		RequestID:     reqID,
+		RequestID:     fmt.Sprintf("prop-%d-%d", os.Getpid(), time.Now().UnixNano()),
 		ActionType:    proposal.ActionType(action),
 		Target:        target,
 		Scope:         scope,
 		ContextDigest: "demo-task-context",
 		Timestamp:     time.Now().Unix(),
 	}
+
 	log.Printf("[提案] action=%s target=%s scope=%s → %s", action, target, scope, sock)
-	resp, err := proposal.Propose(sock, req, 10*time.Second)
+	var resp proposal.Response
+	var err error
+	if wait {
+		resp, err = proposal.ProposeAndWait(sock, req, waitTimeout)
+	} else {
+		resp, err = proposal.Propose(sock, req, 10*time.Second)
+	}
 	if err != nil {
-		log.Fatalf("[提案] 失败: %v", err)
+		log.Printf("[提案] 通道说明: %v", err)
+	}
+	if resp.Decision == "" {
+		log.Fatalf("[提案] 未收到任何裁决")
 	}
 	log.Printf("[裁决] decision=%s reason=%s policy=%s", resp.Decision, resp.Reason, resp.PolicySnapshot)
 	if resp.SurrogateToken != "" {

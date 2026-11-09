@@ -33,11 +33,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sentinel-sec/sentinel/internal/approval"
-	"github.com/sentinel-sec/sentinel/internal/authd"
-	"github.com/sentinel-sec/sentinel/internal/freezer"
-	"github.com/sentinel-sec/sentinel/internal/loader"
-	"github.com/sentinel-sec/sentinel/internal/policy"
+	"sentinel/internal/approval"
+	"sentinel/internal/authd"
+	"sentinel/internal/freezer"
+	"sentinel/internal/loader"
+	"sentinel/internal/policy"
 )
 
 // StatusSource 提供状态摘要的额外信息（freezer 后端等）。
